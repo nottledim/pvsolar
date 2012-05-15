@@ -1,0 +1,13 @@
+pvsolar
+-------
+
+A collection of scripts and programs for collecting reading from pv
+solar inverters and storing in a database.
+
+A collection of php and javascript programs for retrieving and
+displaying retrieved data.
+
+Works with Aurora and SunnyBoy 3800 inverter
+
+15-May-2012 
+
