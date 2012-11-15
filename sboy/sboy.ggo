@@ -1,0 +1,92 @@
+# sboy - SunnyBoy inverter reader
+# Copyright (C) 2012 R.J.Middleton
+# e-mail: dick@lingbrae.com
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+############################################################################
+#                                    
+# File Name ......................... sboy.ggo
+# Written By ........................ Dick Middleton
+# Date .............................. 06-Nov-12
+# Last edit: "Sboy 2012-11-13 2111"; /* auto updated by emacs */
+#
+# Description :  command line definition script
+#    uses gengetopt to process
+#
+############################################################################
+#package "SBoy"
+#version "2.0"
+
+purpose "Reads data from SMA SunnyBoy Inverters"
+
+defgroup "Display detail"
+
+groupoption "verbosity" v 
+"Set detail of output messages. With no argument defaults to normal verbosity"
+       default="normal" argoptional
+       typestr="level" values="quiet","normal","verbose","detailed" 
+       enum optional group="Display detail"
+
+groupoption "quiet" q 
+"For compatibility only. Quiet is the new default. Use verbosity (-v) as required."
+       optional group="Display detail" hidden
+
+section "Bluetooth MAC Address" 
+
+option "address" - "BT MAC address of inverter"
+       typestr="mac_address" string optional
+       details=
+"The inverter address may be found using the 'hcitool scan' \
+command on the host computer"
+
+option "device" - "BT MAC address of host computer"
+       typestr="mac_address" string optional
+       details=
+"The device address may be found using 'hcitool dev' \
+command on the host computer"
+
+text "\nN.B. Bluetooth mac addresses must be 6 colon separated hex pairs \
+e.g: 00:01:FF:A6:42:9A"
+
+section "History"
+option "history" - "Get history list for date from inverter.\nDefault is \
+today. Can also specify 'today' or 'yesterday'."
+       typestr="date" string optional argoptional
+
+option "start-time" s "Start time for history list.\nDefault is before dawn."
+       typestr="time" string optional dependon="history"
+
+option "end-time" e "End time/date for history list.\nDefault is after dusk."
+       typestr="time" string optional dependon="history"
+
+section "Other options"
+
+option "bt-power" b "Display Bluetooth power from inverter"
+       optional
+
+option "dc-readings" d "Display DC current and voltage in inverter"
+       optional
+
+option "set-time" t "Set inverter time to current time"
+       optional
+
+args "--no-handle-help"
+
+# Local Variables:
+# mode: text
+# time-stamp-pattern: "30/Sboy[ \t]+%:y-%02m-%02d %02H%02M"
+# End:
+#                           ===//===

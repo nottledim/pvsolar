@@ -1,0 +1,80 @@
+Sboy - a program for taking readings from SMA SunnyBoy inverter
+
+Author Dick Middleton  November 2012.  Licensed with GNU copyleft V3.
+
+The intention of this program is to return the current readings from
+the SunnyBoy inverter to the invoking program.  This program does not
+do scheduling or logging or submission of data.  All the management stuff has
+to be perfomed by the invoking program.
+
+A program with a simialr purpose but which interacts with A PowerOne Aurora
+inverter has also been written. The management program works equally well
+with either.
+
+The data returned looks like:
+
+READINGS: 114: 0.905: 2967.751: Sboy 2012-11-07 1026
+
+The fields are:
+
+1: A constant "READINGS" which is to give some confidence that the right
+string is being parsed.
+
+2: The power being developed at the time of the reading (integer watts).
+
+3: The total energy generated (yield) so far today. (decimal kW.h)
+
+4: The total energy generated in the lifetime of the inverter.  The
+inverter's meter.  (decimal kW.h).
+
+5: A comment field (or fields) likely to contain the name and version of the
+program.
+
+The field separator is a colon.  This is an easy format to unwrap using the
+perl split function which is why it was chosen.
+
+The program can do other things according to command line options.
+
+sboy -h or sboy --detailed-help should provide further information.
+
+Usage: sboy [OPTIONS]...
+
+  -h, --help                 Print help and exit
+      --detailed-help        Print help, including all details and hidden 
+                               options, and exit
+      --full-help            Print help, including hidden options, and exit
+  -V, --version              Print version and exit
+
+Bluetooth MAC Address:
+      --address=mac_address  BT MAC address of inverter  
+      --device=mac_address   BT MAC address of host computer  
+
+N.B. Bluetooth mac addresses must be 6 colon separated hex pairs e.g: 
+00:01:FF:A6:42:9A
+
+Other options:
+  -b, --btpower              Display Bluetooth power from inverter
+
+ Group: Display detail
+  -v, --verbosity[=level]    Set detail of output messages. With no argument 
+                               defaults to normal verbosity  (possible 
+                               values="quiet", "normal", "verbose", 
+                               "detailed" default=`normal')
+
+The bluetooth mac addresses, which are required, can be passed on the command
+line but it is anticipated the source code will be editied with the users
+values so save the bother. The changes should be made in config.h.
+
+Much of the SMA SunnyBoy protocol is a mystery as it has not been published. 
+This program depends on inspiration, knowledge and example provided by:
+
+a) Wim Hofman and his smatool program. 
+     http://www.on4akh.be/SMA-read.html
+b) Stuart Pittaway and his nanodesmapvmonitor program. 
+     https://github.com/stuartpittaway/nanodesmapvmonitor
+c) Alan Christiansen for his insights to the SMA protocol. 
+     https://sourceforge.net/p/yasdlib/home/Home/ and postings on 
+     on the Whirlpool forum. 
+
+All these contributions are gratefully acknowledged.
+
