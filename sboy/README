@@ -37,6 +37,11 @@ The program can do other things according to command line options.
 
 sboy -h or sboy --detailed-help should provide further information.
 
+
+sboy 2012-11-15 1603
+
+Reads data from SMA SunnyBoy Inverters
+
 Usage: sboy [OPTIONS]...
 
   -h, --help                 Print help and exit
@@ -45,21 +50,32 @@ Usage: sboy [OPTIONS]...
       --full-help            Print help, including hidden options, and exit
   -V, --version              Print version and exit
 
-Bluetooth MAC Address:
-      --address=mac_address  BT MAC address of inverter  
-      --device=mac_address   BT MAC address of host computer  
-
-N.B. Bluetooth mac addresses must be 6 colon separated hex pairs e.g: 
-00:01:FF:A6:42:9A
-
-Other options:
-  -b, --btpower              Display Bluetooth power from inverter
-
  Group: Display detail
   -v, --verbosity[=level]    Set detail of output messages. With no argument 
                                defaults to normal verbosity  (possible 
                                values="quiet", "normal", "verbose", 
                                "detailed" default=`normal')
+
+Bluetooth MAC Address:
+      --address=mac_address  BT MAC address of inverter
+      --device=mac_address   BT MAC address of host computer
+
+N.B. Bluetooth mac addresses must be 6 colon separated hex pairs e.g: 
+00:01:FF:A6:42:9A
+
+History:
+      --history[=date]       Get history list for date from inverter.
+                               Default is today. Can also specify 'today' or 
+                               'yesterday'.
+  -s, --start-time=time      Start time for history list.
+                               Default is before dawn.
+  -e, --end-time=time        End time/date for history list.
+                               Default is after dusk.
+
+Other options:
+  -b, --bt-power             Display Bluetooth power from inverter
+  -d, --dc-readings          Display DC current and voltage in inverter
+  -t, --set-time             Set inverter time to current time
 
 The bluetooth mac addresses, which are required, can be passed on the command
 line but it is anticipated the source code will be editied with the users
@@ -77,4 +93,3 @@ c) Alan Christiansen for his insights to the SMA protocol.
      on the Whirlpool forum. 
 
 All these contributions are gratefully acknowledged.
-

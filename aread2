@@ -1,0 +1,82 @@
+#!/usr/bin/perl
+
+# aread2 - Get readings from aurora inverter
+# Copyright (C) 2012 R.J.Middleton
+# e-mail: dick@lingbrae.com
+#
+# Time-stamp: "2012-03-19 18:17:55 dick"
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+sub help_info { print <<"End of Info;" ; }
+############################################################################
+#                                    
+# File Name ......................... aread2
+# Written By ........................ Dick Middleton
+# Date .............................. 09-Mar-12
+#
+# Description :
+#
+############################################################################
+End of Info;
+
+@_ = split('/', $0);		# extract program name
+our $pn = pop(@_);		# basename
+our $dr = join('/', @_);	# dirname
+
+use Getopt::Std;
+use Device::Inverter::Aurora;
+our %opt;
+our $option_set = "hq";		# valid option characters
+&getopts($option_set, \%opt) || die "$pn aborted: Incorrect option\n";
+&help_info && exit(0) if $opt{h};
+
+# chop($today = `date +%d-%b-%y`); # today's date
+
+
+my $dev = new Device::Inverter::Aurora(
+	retries => 0, 
+	port => '/dev/ttyUSB0',
+	read_const_time => 750, 
+	debug => 0);
+eval {
+    my @data = (
+		'READINGS',
+		sprintf(': %d', $dev->getGridPower()),
+                sprintf(': %0.3f', $dev->getDailyEnergy()/1000),
+                sprintf(": %0.2f:", $dev->getTotalEnergy()/1000),
+	        "\n"
+               );
+    print @data;
+};
+if ($@) {
+    my $error = $@;
+    my $lastError = $dev->lastError();
+    if ($error =~ /Read failure, \d attempts made/ && $lastError =~ /Failed to read in all bytes/) {
+        print STDERR "It would appear that the aurora has gone away\n";
+    }
+    elsif ($error =~ /Read failure, \d attempts made/ && $lastError =~ /Failed to write/) {
+      print STDERR "USB Serial port died\n";
+      # ** Disconnect and reconnect as udev will have re-mapped the symlink **
+    }
+    else {
+       print STDERR $error;
+       print STDERR $lastError;
+    }
+} 
+
+# Local Variables:
+# mode:perl
+# End:

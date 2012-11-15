@@ -1,13 +1,55 @@
 pvsolar
 -------
 
+Introduction
+------------
+
 A collection of scripts and programs for collecting reading from pv
 solar inverters and storing in a database.
+
+Sboy - reader program in C for SMA SunnyBoy 3800 solar pv
+       inverter. Likely to work with other SMA inverters.
+
+Aread2 - reader program in perl for Power One Aurora inverter.  Uses  
+       CPAN package Device::Inverter::Aurora. 
+
+Other - (WIP. not released yet)
 
 A collection of php and javascript programs for retrieving and
 displaying retrieved data.
 
-Works with Aurora and SunnyBoy 3800 inverter
+Other - (WIP. not released yet)
 
-15-May-2012 
+15-Nov-2012 
 
+Sboy
+----
+
+See README in sboy directory
+
+Aread2
+------
+
+Takes current reading and exits.  Intended to be called by management
+program every 5 minutes.
+
+The data returned looks like:
+
+READINGS: 114: 0.905: 2967.751:
+
+The fields are:
+
+1: A constant "READINGS" which is to give some confidence that the right
+string is being parsed.
+
+2: The power being developed at the time of the reading (integer watts).
+
+3: The total energy generated (yield) so far today. (decimal kW.h)
+
+4: The total energy generated in the lifetime of the inverter.  The
+inverter's meter.  (decimal kW.h).
+
+5: A comment field (or fields) possibly to contain the name and version of the
+program.
+
+---//---
