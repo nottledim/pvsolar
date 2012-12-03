@@ -1,4 +1,4 @@
-pvsolar
+pvsolar Nov 2012 Dick Middleton  GPL-3
 -------
 
 Introduction
@@ -10,8 +10,21 @@ solar inverters and storing in a database.
 Sboy - reader program in C for SMA SunnyBoy 3800 solar pv
        inverter. Likely to work with other SMA inverters.
 
-Aread2 - reader program in perl for Power One Aurora inverter.  Uses  
-       CPAN package Device::Inverter::Aurora. 
+Aread2 - reader program in perl for Power One Aurora inverter.  Uses
+       CPAN package Device::Inverter::Aurora.
+
+pvsolar - data collection management program.  Schedules readings
+	every 5 minutes and stores them to mysql data base.  Performs
+	updates at end of day to provide summary and statistics.
+	Schedules FIT meter reading submissions. N.B. but doesn't,
+	interact with third-party data collection web services.
+
+fernietickle - connects to pvsolar over network and provides status monitoring
+	     and some control.
+
+fitmeter.tmpl - email template file for FIT meter reading submissions
+update.tmpl   - email template for daily reports to administrator.
+pvsolar.sql   - mysql table schema.
 
 Other - (WIP. not released yet)
 
@@ -20,7 +33,9 @@ displaying retrieved data.
 
 Other - (WIP. not released yet)
 
-15-Nov-2012 
+15-Nov-2012
+
+A result of this work can be seen at http://www.fouter.net/fernietickle.php
 
 Sboy
 ----
@@ -51,5 +66,99 @@ inverter's meter.  (decimal kW.h).
 
 5: A comment field (or fields) possibly to contain the name and version of the
 program.
+
+pvsolar
+-------
+
+pvsolar is a perl script.  It depeds on a number of contributed
+packages. You'll need to make sure the following are available:
+
+ Getopt::Std, JSON, DBI, Proc::PID::File,
+ Proc::Daemon, Log::Log4perl, POE, Date::Format,
+ Time::Local, Config::INI::Reader, Text::Template,
+ DateTime::Astro::Sunrise
+
+If they're not part of your distro (they are all in Debian) they can
+be obtained from CPAN.
+
+DateTime::Astro::Sunrise needs to be patched - see below.
+
+Configuration is in /etc/pvsolar/pvsolar.conf
+Copy email templates to /etc/pvsolar too.
+
+Create mysql data base with appropriate privileges and use schema to
+create tables.  Configure access to mysql in pvsolar.conf under
+section [dbase].
+
+Configure locn with the latitude and longitude of the solar site.
+This is used to compute sunrise and sunset times. locn can be either
+expressed in decimal degrees or as degrees and decimal minutes.
+
+Set path of reader program e.g /usr/local/sbin/sboy
+
+Set email options and remember to edit tmpl files with appropriate
+email addresses and text.  If email not required then comment out the
+whole [email] section.
+
+Set a passcode for use with fernietickle.  This is not really a
+security feature it is mearly to protect against issuing damaging
+commands unintentionally.
+
+Pvsolar must be run as superuser (root).  It won't start otherwise.
+Tail /var/log/pvsolar.log to check for errors.
+
+Using logrotate to manage the logfile is recommended especially if a
+log level setting more verbose than 'WARN' is used.
+
+GOTCHAS
+-------
+
+Locale settings are enirely disregarded.
+
+There are other compromises in the design of this program which need
+to be addressed to make it generally useful.
+
+fernietickle
+------------
+
+Needs no configuration except to set the host of the running
+pvsolar. fernietickle will connect to pvsolar and allows reading of
+status and the last few readings. You can also change log level, tail
+the log and terminate pvsolar.
+
+Some commands e.g. terminate, need to have passcode as argument:
+
+Command: terminate yesireallymeanit
+
+help will provide info on main commands:
+
+     ? | help       - this message
+     ! | status     - show status info
+     last           - show last 12 results
+     lt | logtail   - display lines from log file
+     st | stoptail  - stop displaying log file
+
+     level <p>      - change log level <p> = inc | + | dec | -
+     level          - show log level
+     all | always | trace | debug | info | warn | error | fatal - set log level
+
+     fit <reading>  - enter fit meter reading
+     terminate <pc> - stop server and exit <pc> is pass code 
+
+     exit | quit    - exit program
+
+DateTime-Astro-Sunrise
+======================
+
+This module has a problem relating to computing time offsets which
+causes it to break if the sunrise and sunset are not in the same day
+UTC.  Austrlia beware.
+
+A patch file with a fix (that I think works) is in sunrise.patch.  It
+has to be applied to Sunrise.pm which is part of a perl module.  On a
+Debian system it's in /usr/share/perl5/DateTime/Astro.
+
+cd /usr/share/perl5/DateTime/Astro
+cat sunrise.patch | patch -p0 Sunrise.pm
 
 ---//---

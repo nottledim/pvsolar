@@ -1,0 +1,14 @@
+From: Mister Admin <admin@example.com>
+To: admin@example.com
+Subject: PV Daily Output { chomp($_=`date +"%d %b %Y"`);$_ } { sprintf("%6.3fkW.h", $emax) }
+Date: { chomp($_=`date -R`);$_ }
+{ "\n"; # Mandatory header separator lines }
+
+                pvsolar on Hostname
+                ===================
+ --------------------------------------------------
+|   Today Energy: |    { sprintf("%6.3f", $emax)   } | kW.h               |
+| Inverter meter: | { sprintf("%9.3f", $meter)     } | kW.h (uncorrected) |
+|          Avg28: |    { sprintf("%5.2f", $avg28) }  | kW.h               |
+|          Avg12: |    { sprintf("%5.2f", $avg12) }  | kW.h               |
+ --------------------------------------------------

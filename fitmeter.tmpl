@@ -1,0 +1,29 @@
+From: Mister Admin <admin@example.com>
+To: meter_readings@energysupplier.com
+Bcc: admin@example.com
+Subject: FIT Meter Reading
+Date: { chomp($_=`date -R`);$_ }
+{ "\n"; # Mandatory header separator lines }
+To Ms Meter Reader
+
+This is my latest FIT generation meter reading:
+
+  Account ID: ABC12345678
+
+  Date: {chomp($_=`date +"%d %b %Y"`);$_}
+
+  Reading: { $reading }
+  {$april ? '
+*** RPI Increase ***
+
+  The reading at end of ' . $adate . ' was: ' . $april : '' } 
+
+Mister Admin
+
+--
+
+22 Arcacia Drive
+Anytown, Countyshire
+AB12 3CD
+
+01234 567890

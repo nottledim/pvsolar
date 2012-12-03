@@ -1,0 +1,90 @@
+--- Sunrise.bak	2012-11-19 13:42:13.724006946 +0000
++++ Sunrise.pm	2012-11-19 14:21:30.536744605 +0000
+@@ -40,7 +40,6 @@
+     my ( $year, $month, $day ) = ( $dt->year, $dt->month, $dt->day );
+     my $altit     = $self->{ALT} || -0.833;
+     my $iteration = defined( $self->{ITER} ) ? $self->{ITER} : 0;
+-
+     if ($iteration) {
+ 
+         # This is the initial start
+@@ -102,22 +101,24 @@
+ 
+         my ( $hour_rise, $min_rise, $hour_set, $min_set ) = convert_hour($tmp_rise_3,$tmp_set_3);
+         my $rise_time = DateTime->new(
+-          year      => $dt->year,
+-          month     => $dt->month,
+-          day       => $dt->day,
+-          hour      => $hour_rise % 24,
+-          minute    => $min_rise,
+-          time_zone => 'UTC'
+-        );
++	    year      => $dt->year,
++	    month     => $dt->month,
++	    day       => $dt->day,
++	    hour      => 0,
++	    minute    => 0,
++	    time_zone => 'UTC')->add(hours=>$hour_rise,
++				     minutes => $min_rise
++	    );
+         my $set_time = DateTime->new(
+-          year      => $dt->year,
+-          month     => $dt->month,
+-          day       => $dt->day,
+-          hour      => $hour_set % 24,
+-          minute    => $min_set,
+-          time_zone => 'UTC'
+-        );
+-      return ($rise_time, $set_time); 
++	    year      => $dt->year,
++	    month     => $dt->month,
++	    day       => $dt->day,
++	    hour      => 0,
++	    minute    => 0,
++	    time_zone => 'UTC')->add(hours=>$hour_set,
++				     minutes => $min_set
++	    );
++	return ($rise_time, $set_time); 
+     }
+     else {
+         my $d =
+@@ -127,23 +128,24 @@
+           sun_rise_set( $d, $self->{LON}, $self->{LAT}, $altit, 15.0 );
+         my ( $hour_rise, $min_rise, $hour_set, $min_set ) =
+           convert_hour( $h1, $h2 );
+-
+         my $rise_time = DateTime->new(
+-          year      => $dt->year,
+-          month     => $dt->month,
+-          day       => $dt->day,
+-          hour      => $hour_rise % 24,
+-          minute    => $min_rise,
+-          time_zone => 'UTC'
+-        );
++	    year      => $dt->year,
++	    month     => $dt->month,
++	    day       => $dt->day,
++	    hour      => 0,
++	    minute    => 0,
++	    time_zone => 'UTC')->add(hours=>$hour_rise,
++				     minutes => $min_rise
++	    );
+         my $set_time = DateTime->new(
+-          year      => $dt->year,
+-          month     => $dt->month,
+-          day       => $dt->day,
+-          hour      => $hour_set % 24,
+-          minute    => $min_set,
+-          time_zone => 'UTC'
+-        );
++	    year      => $dt->year,
++	    month     => $dt->month,
++	    day       => $dt->day,
++	    hour      => 0,
++	    minute    => 0,
++	    time_zone => 'UTC')->add(hours=>$hour_set,
++				     minutes => $min_set
++	    );
+       return ($rise_time, $set_time);
+     }
+ 

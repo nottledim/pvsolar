@@ -1,0 +1,1237 @@
+#!/usr/bin/perl
+
+# pvsolar - Manage readings from solar panels
+# Copyright (C) 2012 R.J.Middleton
+# e-mail: dick@lingbrae.com
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+BEGIN {
+$main::version = <<'VER';
+ Last-modified: 2012-11-26  11:49:54 on penguin.lingbrae""
+VER
+$version =~ s/["\s]+$//;
+}
+
+sub help_info { print <<"End of Info;" ; }
+############################################################################
+#
+# File Name ......................... pvsolar
+# Written By ........................ Dick Middleton
+# Date .............................. 02-Jan-12
+#
+#
+# Description :
+#           -d debug
+#           -h help
+#           -c <file> config file default: /etc/pvsolar/pvsolar.conf
+#
+############################################################################
+End of Info;
+
+use strict;
+use warnings;
+
+@_ = split('/', $0);                    # extract program name
+our $pn = pop(@_);                      # basename
+#our $dr = join('/', @_);               # dirname
+
+use Getopt::Std;
+use JSON;
+use DBI;
+use Proc::PID::File;
+use Proc::Daemon;
+use Log::Log4perl qw(get_logger  :levels);
+use POE qw( Wheel::Run Filter::Line Filter::Stream 
+            Component::Server::TCP Wheel::FollowTail);
+use Date::Format;
+use Time::Local;
+use Config::INI::Reader;
+use Text::Template qw(fill_in_file fill_in_string);
+use DateTime::Astro::Sunrise;
+
+#------------------------------------------------------------
+
+our %opt;
+our $option_set = "c:dh";              # valid option characters
+&getopts($option_set, \%opt) || die "$pn aborting: Incorrect option\n";
+&help_info && exit(0) if $opt{h};
+
+#------------------------------------------------------------
+
+use constant INI_FILE   => '/etc/pvsolar/pvsolar.conf';
+
+use constant T5mins  => 5*60;
+use constant T10mins => 10*60;
+use constant T15mins => 15*60;
+use constant T30mins => 30*60;
+use constant T24hrs  => 60*60*24;
+use constant T100secs => 100;
+
+use constant READPERIOD => T5mins;   # time between measurements
+use constant ABSCISE    => T5mins;   # cut-off points on chart
+use constant MAXRETRIES => 2;        # attemts to reread measurements
+use constant RETRYDELAY => READPERIOD/(1+MAXRETRIES);
+
+use constant DATAGRAM_MAXLEN => 2048;
+
+#------------------------------------------------------------
+
+# Levels:  trace debug info warn error fatal
+our %loglevels = ($OFF => 'always',  $TRACE => 'trace',
+		  $DEBUG => 'debug', $INFO => 'info',
+                  $WARN => 'warn',   $ERROR => 'error',
+		  $FATAL => 'fatal',
+		  'all' => $OFF,     'always' => $OFF,
+		  'trace' => $TRACE, 'debug' => $DEBUG,
+		  'info' => $INFO,   'warn' => $WARN,
+		  'error' => $ERROR, 'fatal' => $FATAL);
+
+#================= Start Here =====================
+
+!$> || die("$pn aborting. Must be superuser\n");
+
+our $cfgfile = $opt{c} || INI_FILE;
+(-r $cfgfile) || die("$pn aborting. Cannot access config file ($cfgfile)\n");
+
+our $cfg = Config::INI::Reader->read_file($cfgfile);
+our $logfile = $cfg->{path}{logfile};
+our $passcode = $cfg->{cfg}{passcode};
+our $hostname = `hostname` || 'Unknown';
+chomp $hostname;
+
+our @latlong = getLocn($cfg->{cfg}{locn}); # dies if not correct
+our %TZ;				   # holds TZ offsets and strings
+
+# Check fit email config
+our $fit_email = 0;
+our @submit;
+if (exists $cfg->{email}) {
+    @submit = verify_fit_config();
+    $fit_email = 1;
+}
+
+#
+# fork and background process
+#
+our $ME = $0; $ME =~ s|.*/||;
+our $PIDFILE = $cfg->{path}{piddir}."/$ME.pid";
+
+warn("Starting \L\u$pn\n");
+
+startDaemon();
+
+# Setup a logging agent
+our $log = start_logging();
+
+$log->level($DEBUG) if exists($opt{d});
+
+$log->warn("***** \L\u$pn Daemon Started *****");
+
+#========== POE Session loops =====================
+
+# main timing loop session
+POE::Session->create(
+    inline_states => {
+	_start => \&h_start,
+        reset => \&h_reset,
+        handled => \&h_handled,
+        unhandled => \&h_unhandled,
+        reading => \&h_start_reading,
+        readnext => \&h_readnext,
+	save => \&h_save_reading,
+	retry => \&h_retry_reading,
+        eveupd => \&h_eveupd,
+	get_status => \&h_get_status,
+	fit_mail => \&h_fit_mail,
+    }
+    );
+
+POE::Component::Server::TCP ->new(
+    Port        => $cfg->{cfg}{tcp_port} || 11211,
+    ClientInputFilter  => "POE::Filter::Line",
+    ClientOutputFilter  => "POE::Filter::Line",
+    ClientConnected    => sub {
+	$log->info(sprintf("TCP connect from %s id: %i",
+			    $_[HEAP]{remote_ip}, $_[SESSION]->ID));
+    },
+    ClientDisconnected => sub {
+	my ($k, $h) = @_[KERNEL, HEAP];
+	if (exists($h->{LogTail}) && $h->{LogTail}) {
+	    $k->post($h->{LogTail}->ID, 'quit');
+#	    $log->debug(sprintf("TCP disconnect id: %i", $_[SESSION]->ID));
+	}
+    },
+    ClientInput => \&parse_command
+    );
+
+POE::Kernel->run();                     # should never get here because timer always active
+
+$log->error("Stopping Processing");     # Mark a clean exit in the log
+
+#========= main loop handlers =====================
+
+sub h_start {                 # initialisation
+    my ($k, $h, $p) = @_[KERNEL, HEAP, ARG0];
+    $k->alias_set('main');
+    $h->{srcdir} = $cfg->{path}{workdir};
+    $k->sig(HUP  => "handled",   "SIGHUP");
+    $k->sig(INT  => "unhandled", "SIGINT");
+    $k->sig(TERM => "unhandled", "SIGTERM");
+    $k->sig(QUIT => "unhandled", "SIGQUIT");
+    $k->sig(USR1 => "handled",   "SIGUSR1");
+    $k->sig(USR2 => "handled",   "SIGUSR2");
+    $k->yield("reset");
+}
+
+sub h_reset {
+    my ($k, $h, $p) = @_[KERNEL, HEAP, ARG0];
+    
+    $log->warn(sprintf("Doing reset %s", ptime(time()) )) if exists($h->{tm});
+    
+    $h->{tm} = new_day();
+    my $tm = $h->{tm};
+    
+    $h->{retry} = 0;
+    $h->{reading} = 0;
+    $h->{failures} = 0;
+    $h->{successes} = 0;
+
+    $h->{next_reading} = $tm->{first};
+    $k->alarm(reset => $tm->{reset});
+
+    # careful only to set future timers
+    if ($tm->{evening} > $tm->{now}) {
+	$k->alarm(eveupd => $tm->{evening});
+	if ($tm->{first} > $tm->{last}) {
+	    $log->warn("Starting too late for readings today");
+	}
+	else {
+	    $k->alarm(reading => $h->{next_reading});
+	}
+    }
+    else {
+	$log->warn("Starting too late for readings and updates");
+    }
+
+    $tm->{offset} = get_offset();      # encapsulate this for transfer to php scripts
+    save_times($tm);
+
+    my $mailflush = Log::Log4perl->appender_by_name('pvmail');
+    $mailflush->flush if $mailflush;
+
+    if ($tm->{nmr} && ! $tm->{nmd} && ! $h->{meter_reading}) {
+	$h->{meter_reading} = 1;
+	$k->alarm(fit_mail => $tm->{nmr});
+	$log->info("Scheduling FIT email");
+    }
+}
+
+sub h_handled {
+    my ($k, $h, $p, $d) = @_[KERNEL, HEAP, ARG0, ARG1];
+    $log->error("$d received (handled)") if $d;
+    $k->sig_handled();
+#           $k->yield("reading") if ($d eq 'SIGTERM');
+    if ($d eq 'SIGUSR1') {
+	$log->more_logging();
+	my $level = $log->level();
+	$log->error("Log level increased to $loglevels{$level}");
+    }
+    if ($d eq 'SIGUSR2') {
+	$log->less_logging();
+	my $level = $log->level();
+	$log->error("Log level decreased to $loglevels{$level}");
+    }
+    
+    log_report($h->{tm}) if ($d eq 'SIGHUP');
+}
+
+sub h_unhandled {
+    my ($k, $h, $p, $d) = @_[KERNEL, HEAP, ARG0, ARG1];
+    $log->error("$d received (unhandled)");
+}
+
+sub h_start_reading {
+    POE::Session->create(
+	inline_states => {
+	    _start => \&w_start,
+	    sb_stdout => \&w_sb_stdout,
+	    sb_stderr => \&w_sb_stderr,
+	    sb_close => \&w_sb_close,
+	    sb_sigchld => \&w_sb_sigchld,
+	    _stop => sub { $log->debug("Wheel for reading terminated"); }
+	}
+	);
+}
+
+sub h_save_reading {
+    my ($k, $h, $p1, $p2, $p3) = @_[KERNEL, HEAP, ARG0, ARG1, ARG2];
+
+    $h->{successes}++;       # just count them
+    $k->yield("readnext");   # schedule next
+
+    my $dbh;
+    if ($dbh = open_dbase() ) {
+	my $row;
+	if (!do_mysql($dbh, 0,
+		      "INSERT INTO DayData SET Date = CURDATE(), Time = CURTIME(), CurrentPower = '$p1', ETotalToday = '$p2'," .
+		      " Meter = '$p3', DataPoint = FLOOR( ((HOUR(CURTIME()) * 60) + MINUTE(CURTIME()))/5 )",
+		      "Failed to add new reading to DayData")) {
+
+	    $log->error("Unable to add reading to DayData");
+
+	    if (!do_mysql($dbh, 0,
+			  "UPDATE DayData SET Time = CURTIME(), CurrentPower = '$p1', ETotalToday = '$p2', Meter = '$p3'" .
+			  " WHERE Date = CURDATE() and DataPoint = FLOOR( ((HOUR(CURTIME()) * 60) + MINUTE(CURTIME()))/5 )",
+			  "Failed to update new reading in DayData")) {
+
+		$log->error("Unable to add or update data point in DayData");
+	
+	    }
+	    else {
+		$log->info("Updated new reading OK");
+	    }
+	}
+	else {
+	    $log->info("Inserted new reading OK");
+	}
+    }
+    else {
+	$log->error("Failed to connect for adding reading($p1 $p2 $p3): $! (save_reading)" );
+    }
+}
+
+sub h_retry_reading {
+    my ($k, $h, $p) = @_[KERNEL, HEAP, ARG0];
+    my $msg = "Reading failed: ";
+    my @trymsg = ( 'try again', 'last try');
+
+    if ($h->{successes}) {  # ignore failures before inverter starts
+
+	$h->{failures}++;
+
+	if ($h->{retry} < MAXRETRIES ) {
+	    if (($h->{next_reading} + RETRYDELAY) < $h->{tm}->{last}) {
+		$k->delay_set("reading", RETRYDELAY); # re-enter after delay
+		$msg .= $trymsg[$h->{retry}];
+		$h->{retry}++;
+	    }
+	    else {
+		$msg .= 'Too late to retry';
+	    }
+	}
+	else {
+	    $msg .= "Resume schedule";
+	    $k->yield("readnext"); # no more retries - move on
+	}
+	$log->info(sprintf($msg));
+    }
+    else {
+	$k->yield("readnext");
+    }
+}
+
+sub h_readnext {       # schedule next reading
+    my ($k, $h, $p) = @_[KERNEL, HEAP, ARG0];
+    my $tm = $h->{tm};
+    $h->{retry} = 0; # re-initialise
+    $h->{next_reading} = tm_boundary($h->{next_reading}, READPERIOD, 1);
+
+    if ($h->{next_reading} > $tm->{last}) { # finished
+	$log->warn("End of daylight. No more readings");
+    }
+    else {
+	$log->debug(sprintf("Next reading scheduled for: %s", ptime($h->{next_reading}) ));
+	$k->alarm(reading => $h->{next_reading})
+    }
+}
+
+sub send_update_email {
+    return unless exists $cfg->{email}{update};
+
+    my ($v) = @_;
+    my $body = fill_in_file( $cfg->{email}{update}, HASH => $v );
+
+    if (open(MAIL, "|" . $cfg->{email}{sendmail})) {
+	
+	print MAIL $body;
+
+	close MAIL;
+	$log->warn("Sending daily update email");
+    }
+}
+    
+sub h_eveupd {
+    my ($k, $h, $p) = @_[KERNEL, HEAP, ARG0];
+    my ($dbh, $row);
+    my (%v);
+
+    $log->info("Evening update");
+    if ($dbh =  open_dbase() ) {
+	if ($row = do_mysql($dbh, 1,
+			    "SELECT round(max(ETotalToday), 3) as emax, round(max(Meter),3) as meter FROM DayData WHERE Date = CURDATE()",	
+			    "Failed reading total for day from DayData")) {
+	    $v{emax} = $row->{emax};
+	    $v{meter} = $row->{meter};
+	    if ($v{meter} && ($row = do_mysql($dbh, 0,
+				"UPDATE DayMeta SET Energy = '$v{emax}', " .
+				"Meter = '$v{meter}' WHERE Date = CURDATE()",
+				"Failed to add averages to DayMeta"))) {
+		$log->warn('Updated day info OK');
+
+		#----- Create temp tables
+		if (do_mysql($dbh, 0,
+			     "CREATE temporary TABLE days28 select * from  DayMeta  order by Date desc limit 28",
+			     "Failed to create temp table days28")) {
+		    if (do_mysql($dbh, 0,
+				 "CREATE temporary TABLE days365 select * from  DayMeta  order by Date desc limit 365",
+				 "Failed to create temp table days365")) {
+			
+			#----- Averages
+
+			if ($row = do_mysql($dbh, 1,
+					    "SELECT round(avg(Energy), 2) as avg28 FROM days28",
+					    "Failed reading avg28")) {
+			    $v{avg28} = $row->{avg28};
+
+			    if ($row = do_mysql($dbh, 1,
+						"SELECT  round(avg(Energy), 2) as avg12 from days365",
+						"Failed reading avg12")) {
+				$v{avg12} = $row->{avg12};
+
+				if ($row = do_mysql($dbh, 0,
+						    "UPDATE DayMeta SET Avg28 = '$v{avg28}', Avg12 = '$v{avg12}'" .
+						    " WHERE Date = CURDATE()",
+						    "Failed to add averages to DayMeta")) {
+				    $log->warn('Updated day averages OK');
+				    &send_update_email(\%v);
+				}
+				else {
+				    $log->error("Failed to update day averages in DayMeta");
+				}
+			    }
+			}
+		    }
+		    else {
+			$log->error("Failed to create temp table days365");
+		    }
+		}
+		else {
+		    $log->error("Failed to create temp table days28");
+		}
+	    }
+	    else {
+		$log->error("Failed to update day info in DayMeta");
+	    }
+	}
+	$dbh -> disconnect;	
+    }
+    else {
+	$log->error("Failed to connect: $! (eveupd)" );
+    }
+}
+
+sub h_get_status {
+    my ($k, $h, $s, $to, $val) = @_[KERNEL, HEAP, SENDER, ARG0, ARG1];
+    my $tm= $h->{tm};
+    my $counts = {'s' => $h->{successes},
+		  'f' => $h->{failures} };
+
+    my $message = "  \L\u$pn$main::version\n" .
+	sprintf("  Time now: %s\n", time2str('%T %Z %d-%h-%Y', time() + $TZ{offset}, $tm->{tzname}));
+    $message .= sprintf("  Next meter reading: %s (%d days)%s\n",
+			time2str("%T %Z %d-%h-%Y", $tm->{nmr}, $tm->{tzname}), 
+			$tm->{nmd},
+			format_april($tm->{nma})) if $tm->{nmr};
+
+    $message .= fill_in_string( <<'EOM', HASH => {'t' => $tm, 'v' => $val, 'c' => $counts });
+
++----------------------+-------+-------+
+| Sun         rise/set | { ptime($t{rise})  } | { ptime($t{set})     } |
+| Reading   first/last | { ptime($t{first}) } | { ptime($t{last})    } |
+| Chart      begin/end | { ptime($t{begin}) } | { ptime($t{end})     } |
+| Events reset/evening | { ptime($t{reset}) } | { ptime($t{evening}) } |
++----------------------+-------+-------+
+
++----------------------+----------+------+
+| Current        meter | { sprintf("%8.3f", $v{meter} / $v{offset}) } | kW.h |
+|             inverter | { sprintf("%8.3f", $v{meter}) } | kW.h |
+|               offset |  { sprintf("%7.5f", $v{offset})         } |      |
++----------------------+----------+------+
+
++----------------------+------------+---------+------+
+| Best Day  peak power | { $v{date_peak}   } |    { sprintf("%4d", $v{peak_rcrd})      } | W    |
+|               energy | { $v{date_energy} } | { sprintf("%7.3f", $v{energy_rcrd})     } | kW.h |
++----------------------+------------+---------+------+
+
++----------------------+---------+------+
+| Today     peak power |    { sprintf("%4d", $v{peak})           } | W    |
+|               energy | { sprintf("%7.3f", $v{energy})          } | kW.h |
++----------------------+---------+------+
+
++----------------------+-----+----+
+| Readings good/failed | { sprintf("%3d", $c{s}) } | { sprintf("%2d", $c{f}) } |
++----------------------+-----+----+
+EOM
+
+ if ($to) {
+#$k->post('fernie', 'sendmsg', $message . "<<\n");
+    $to->put($message);
+$to->put("<<");
+}
+}
+
+sub h_fit_mail {
+    my ($k, $h) = @_[KERNEL, HEAP];
+    send_fit_email($h->{tm}->{nma}) if $h->{meter_reading};
+    $h->{meter_reading} = 0;
+    $h->{tm}->{nmr} = 0;
+    $h->{tm}->{nmd} = 0;
+}
+
+#============ Read Sunny Boy Wheel child handlers ===============
+
+sub w_start {
+  my ($kernel, $heap) = @_[KERNEL, HEAP];
+  $heap->{child} = POE::Wheel::Run->new(
+      Program => [ $cfg->{path}{reader}, "-q" ],               # Program to run.
+      StdioFilter  => POE::Filter::Line->new(),    # Child speaks in lines.
+      StderrFilter => POE::Filter::Line->new(),    # Child speaks in lines.
+      StdoutEvent  => "sb_stdout",          # Child wrote to STDOUT.
+      StderrEvent  => "sb_stderr",          # Child wrote to STDERR.
+      CloseEvent   => "sb_close",           # Child stopped writing.
+      );
+  $heap->{err} = 0;
+  $heap->{io} = 0;
+  $heap->{read} = 0;
+  $kernel->sig_child($heap->{child}->PID, "sb_sigchld");
+}
+
+sub w_sb_stdout {
+    my ($k, $h, $p) = @_[KERNEL, HEAP, ARG0];
+
+    chomp $p;
+    my ($head, $power, $energy, $meter) = split(/:/, $p);
+    if ($head eq 'READINGS') {
+	$k->post('main', "save", $power, $energy, $meter);
+	$log->info($p);
+	$h->{read} ++;
+    }
+    else {  
+	$h->{io} ++;
+	$log->warn("Data on stdio from inverter: $p"); 
+    }
+}
+
+sub w_sb_stderr {
+    my ($k, $h, $p) = @_[KERNEL, HEAP, ARG0];
+#  $stderr =~ tr[ -~][]cd;
+  $log->warn( $p );		# changed to log as warn
+  $h->{err} ++;
+}
+
+sub w_sb_close {
+  my ($k, $h) = @_[KERNEL, HEAP];
+  if ($h->{read}) { }		# do nothing
+  elsif ($h->{err}) {
+      $k->post('main', 'retry');
+  }
+  else {
+      $k->post('main', 'readnext');
+  }
+     
+  $log->debug( "child closed.");
+  my $mailflush = Log::Log4perl->appender_by_name('pvmail');
+  $mailflush->flush if $mailflush;
+  delete $h->{child};
+}
+
+sub w_sb_sigchld {
+  $log->debug( "SIGCHLD reaped.");
+}
+
+#============ Main loop subroutines ===============
+
+sub startDaemon {            # Fork and detach from the parent process
+#  eval { close DATA; }; # having __END__ will trigger __DATA__ to open and should be closed
+    eval { Proc::Daemon::Init({
+        work_dir => $cfg->{path}{workdir},
+        child_STDERR => ">>$logfile",
+        child_STDOUT => ">>$logfile"
+                              }
+               ) };
+    if ($@) {
+        dienice("Unable to start daemon:  $@");
+    }
+    dienice("Already running!") if Proc::PID::File->running();
+}
+
+sub dienice ($) {       # write die messages to the log before die'ing
+  my ($package, $filename, $line) = caller;
+  die("$pn aborting. $_[0] at line $line in $filename");
+}
+
+sub start_logging {
+
+    Log::Log4perl::init( \%{$cfg->{log}} );
+    my $log = Log::Log4perl->get_logger();
+    return $log;
+}
+
+#======== Main supporting subroutines =============
+
+sub format_april {
+    my ($flag) = @_;
+
+    $flag ? " incl last April reading" : '';
+}
+
+sub tm_boundary {
+    my ($time, $interval, $next) =@_;
+
+    my $bound = $time - ($time % $interval);
+
+    $bound += $interval if $next;
+
+    return $bound;
+}
+
+sub getLocn {			# parse lat/long string
+    my ($locn) = @_;
+    my ($lat, $d1, $long, $d2);
+
+    die "$pn aborting. Must provide a valid location lat/long in $cfgfile\n"
+	unless $locn;
+
+    my @locn = $locn =~ m/^(\d+)\D(\d+(\.\d+)?)([NS])\s+(\d+)\D(\d+(\.\d+)?)([EW])/;
+
+    if (scalar @locn == 8) {	# try deg + decimal minutes
+	$lat = $locn[0] + $locn[1]/60;
+	$lat *= -1 if $locn[3] eq 'S';
+	$long = $locn[4] + $locn[5]/60;
+	$long *= -1 if $locn[7] eq 'W';
+    }
+    else {			# try real numbers
+	@locn = $locn =~ m/^([+-]?\d+(\.\d+)?)\s+([+-]?\d+(\.\d+)?)/;
+	die "$pn aborting. Failed to parse location string in $cfgfile"
+	    unless scalar@locn == 4;
+	($lat, $d1, $long, $d2) = @locn;
+    }
+    return (sprintf("%f", $lat), sprintf("%f", $long));
+}
+
+sub get_astro_sunrise {
+    my ($tm, $dt) = @_;
+    my $sunrise = DateTime::Astro::Sunrise->new( $latlong[1], $latlong[0],
+						 -0.583, 1);
+    my ($rise, $set) = $sunrise->sunrise($dt);
+    $tm->{rise} = $rise->epoch;
+    $tm->{set} = $set->epoch;
+    $log->debug("Lat: $latlong[0]  Long: $latlong[1]");
+}
+
+sub tzGuess {
+    return sprintf("%i:00:00", int($latlong[1]/15 + 0.5));
+}
+
+sub setTzOffset {
+    my ($offset) = @_;
+    $TZ{offset} = $offset;	# seconds
+    my $hrs = int($offset/3600);
+    my $mins = abs(int($offset/60 - $hrs*60));
+    $TZ{numeric} = sprintf(qq('%+0d:%02d'), $hrs, $mins);
+    $TZ{mysql} = sprintf(qq(SET time_zone = %s), $TZ{numeric});
+#    $log->debug("Mysql TZ Offset " . $TZ{mysql});
+}
+
+sub new_day {                           # compute times for todays timers
+    my %tm;
+    my $tz = DateTime::TimeZone->new(name=>$cfg->{cfg}{timezone} || tzGuess());
+    my $dt_now = DateTime->now(time_zone=>$tz);
+    $tm{tzoffset} = $dt_now->offset(); # these get saved in data base
+    $tm{tzname} = $dt_now->time_zone_long_name();
+    setTzOffset($tm{tzoffset});
+    $tm{now} = $dt_now->epoch();
+
+    get_astro_sunrise(\%tm, $dt_now);
+
+    $tm{sfrst} = $tm{first} = tm_boundary($tm{rise}, ABSCISE, 1); # first reading
+    $tm{last} = tm_boundary($tm{set}, ABSCISE, 0); # last reading
+
+    $tm{begin} = tm_boundary($tm{first}, T30mins, 0); # chart start
+    $tm{ptbegin} = tm2pt($tm{begin}); # chart start scale position number
+    $tm{end}   = tm_boundary($tm{last}, T30mins, 1); # chart end
+    $tm{ptend} = tm2pt($tm{end}); # chart end scale position number
+    $tm{evening} = $tm{last} + T5mins;          # 5mins after last reading
+    $tm{reset} = $dt_now->set(hour=>3, minute=>0, second=>0)->
+	add(days=>1)->epoch; # 3am tomorrow;
+    $log->debug("Reset epoch: $tm{reset} tzoffset: $TZ{offset}");
+    if ($tm{first} < $tm{now}) { # accounts if prog started during day
+        $tm{first} = tm_boundary($tm{now}, READPERIOD, 1);
+    }
+    if ($fit_email) {		# fit email configured
+	($tm{nmr}, $tm{nma}) = next_meter_reading($tm{now}, @submit);
+	
+	if ($tm{nmr}) {
+	    $tm{nmd} = int (($tm{nmr}-$tm{now}) / T24hrs);
+	}
+	else {
+	    $tm{nmd} = -1;		# reading error
+	}
+    }
+    log_report(\%tm);
+    return \%tm;
+}
+
+sub nmr_msg {
+    my ($tm) = @_;
+    if ($tm->{nmr}) {
+	if ($tm->{nmr} > 0) {
+	    if ($tm->{nmd}) {
+		$log->info("Next meter reading due: " . 
+			   time2str("%d-%h-%Y ($tm->{nmd} days)", $tm->{nmr}) .
+			   format_april($tm->{nma}));
+	    }
+	    else {
+		$log->warn("Next meter reading scheduled for: " . 
+			   time2str("%T %Z %d-%h-%Y", $tm->{nmr}) .
+			   format_april($tm->{nma}));
+	    }
+	}
+	elsif ($tm->{nmr} < 0) {
+	    $log->error("Incorrect email submit info");
+	}
+    }
+    else {
+	$log->warn("No meter reading email scheduled");
+    }
+}
+
+sub verify_fit_config {
+    my @submit;
+    my $msg = '';
+    $msg = "must provide submit timetable" 
+	unless exists ($cfg->{email}{submit});
+    $msg = "must provide readable template file" 
+	unless  exists ($cfg->{email}{template}) && -r $cfg->{email}{template};
+    
+    if (exists  $cfg->{email}{sendmail})  {
+	my $sm = $cfg->{email}{sendmail};
+	$sm =~ s/\s.*//; 	# remove options to get path
+	$msg = "sendmail prog not executable" unless -x $sm;
+    }
+    else {
+	$msg = "must specify sendmail prog path";
+    }
+    if (!$msg) {
+	my ($time, $day, @months) = split(/\s+/, $cfg->{email}{submit});
+	
+	$msg = "bad submit time format"
+	    unless $time =~ /^\d{1,2}(:\d{1,2}(:\d{1,2})?)?$/;
+
+	if (!$msg) {
+	    my ($h, $m, $s) = split(/:/, $time);
+	    $m = 0 unless $m;
+	    $s = 0 unless $s;
+	    $msg = "bad submit time value" unless ($h >=0) && ($h < 24) &&
+		($m >= 0) && ($m < 60) &&
+		($s >= 0) && ($s < 60);
+
+	    if (!$msg) {
+		$msg = "bad submit day value" unless ($day > 0) && ($day <= 31);
+
+		if (!$msg) {
+		    $msg = "No submit month given" unless @months;
+		    if (!$msg) {
+			$msg = "bad submit month value"
+			    if  grep( ($_ < 1) || ($_ > 12), @months );
+			if (!$msg) {
+			    @submit = ($s, $m, $h, $day, @months);
+			}
+		    }
+		}
+	    }
+	}
+    }
+
+    die("$pn aborting. Incorrect fit email config: $msg\n") if $msg;
+
+    return @submit;
+}
+
+sub next_meter_reading {
+    my ($now, $s, $m, $h, $day, @months) = @_;
+
+    my @now = gmtime($now);
+
+    my @time = ($s, $m, $h, $day);
+    my $yy = $now[5];
+
+    my $nn = $#months;		# last index 0..
+    my $mm = 0;			# index into @months
+    my $next;			# next reading date
+    my $april;			# flag if april comes before next
+    if ($nn >= 0) {
+	do {
+	    if ($mm > $nn) {
+		$yy++;
+		$mm = 0;
+	    }
+	    $next = timegm( @time, $months[$mm]-1, $yy );
+	    $mm++;
+	} while ( $next < $now );
+	
+	$mm--;
+	$april = ( ($nn <= 0) && ($months[$mm] != 4) ) || # only one month given and it's not april
+	    (($mm == 0) && ($months[$mm] > 4)) ||	  # first month in list is after april
+	    ( ($mm > 0) && ($months[$mm-1] < 4) && ($months[$mm] > 4) );
+	$log->debug("april= $april, mm= $mm, nn= $nn");
+    }
+    else { $next = 0; }
+    return ($next, $april);
+}
+
+sub log_report {
+    my ($tm) = @_;
+    $log->warn(sprintf("Sun rise: %s set: %s  tz: %s",  ptime($tm->{rise}), ptime($tm->{set}), $tm->{tzname}));
+    $log->warn(sprintf("Reading first: %s  last: %s  Update: %s", ptime($tm->{first}), ptime($tm->{last}), ptime($tm->{evening})));
+    $log->info(sprintf("Chart begin: %s   end: %s", ptime($tm->{begin}), ptime($tm->{end})));
+    if ($log->is_debug()) {
+	$log->debug("$tm->{rise} $tm->{first} $tm->{begin} $tm->{end} $tm->{last} $tm->{set}");
+	$log->debug(sprintf("Reading first: %s  last: %s", tm2pt($tm->{first}), tm2pt($tm->{last})));
+	$log->debug(sprintf("Events evening: %s reset: %s", ptime($tm->{evening}), ptime($tm->{reset}) ));
+    }
+    nmr_msg($tm);
+
+}
+
+sub open_dbase {
+    my $dbh;
+    if ($dbh = DBI->connect($cfg->{dbase}{DBBASE}, $cfg->{dbase}{DBUSER}, $cfg->{dbase}{DBPASS}) ) {
+	$dbh->{PrintError} = 0;
+	$dbh->{RaiseError} = 0;
+    }
+    if ($dbh) {
+	my $row = $dbh->do($TZ{mysql});
+	if ($dbh->err) {
+	    $log->error($dbh->errstr() . " Failed to set TZ offset");
+	}
+    }
+    return $dbh;
+}
+
+sub do_mysql {
+    my ($dbh, $type, $query, $message, $level) = @_;
+    my ($res, $row);
+
+    if ($type) { 		# select
+	$res = $dbh -> prepare($query);
+        if ($res->execute) {
+	    $row = $res -> fetchrow_hashref;
+	}
+	else {
+	    $log->error($dbh->errstr() . " $message");
+	    $log->error("SQL: " . $query);
+	    $row = 0;
+	}
+	$res->finish();
+    }
+    else { 			# other types
+	$row = $dbh->do($query);
+	if ($dbh->err) {
+	    if ($level) {	# if true reduce error to warning
+		$log->warn($dbh->errstr() . " $message");
+	    }
+	    else {
+		$log->error($dbh->errstr() . " $message");
+		$log->error("SQL: " . $query);
+	    }
+	    $row = 0;
+	}
+    }
+    return $row;		# number of rows updated
+}
+
+sub save_times {		# this is done around 3am to set sunrise, event times etc
+    my ($tm) = @_;
+    my $dbh;
+
+    if ($dbh =  open_dbase() ) {
+	my $json = JSON->new;
+	unless (do_mysql($dbh, 0,
+		       "INSERT INTO DayMeta SET Date = CURDATE(), Info = '" . $json->encode( $tm ) ."'",
+		       "inserting info. Trying to update instead", 1)) {
+	    if (do_mysql($dbh, 0,
+			 "UPDATE DayMeta SET Info = '". $json->encode( $tm ) ."' WHERE Date = CURDATE()",
+			 "inserting info. Giving up")) {
+		$log->info("Updated day info OK");
+	    }
+	}
+	$dbh -> disconnect;	
+    }
+    else {
+	$log->error("Failed to connect: $! (save_times)" );
+    }
+}
+
+sub get_offset {
+    my ($dbh, $row);
+    my $offset = 1;
+    if ( $dbh = open_dbase() ) {
+	if ($row = do_mysql($dbh, 1,
+			    "SELECT Avg5 as offset from Meters where Avg5 IS NOT NULL order by Date desc limit 1",
+			    "Failed to read Meters" )) {
+	    $offset = $row->{offset};
+	}
+	$dbh->disconnect;
+    }
+    return $offset;
+}
+
+sub send_fit_email {
+    my ($tm) = @_;
+    my $row;
+    my $dbh;
+
+    if ($dbh =  open_dbase() ) {
+
+	if ($row = do_mysql($dbh, 1,
+			    "SELECT max(Meter) as meter FROM DayMeta WHERE year(Date)=year(CURDATE())",
+			    "Failed reading info from DayMeta", 1)) {
+	    my $meter  = $row->{meter};
+
+	    if ($meter && ($row = do_mysql($dbh, 1,
+					   "SELECT Avg5 as offset from Meters where Avg5 IS NOT NULL order by Date desc limit 1",
+					   "Failed to read offset from Meters" ))) {
+		my $offset = $row->{offset};
+		my $april = $tm;
+		my $adate;
+
+		if ($april && ($row = do_mysql($dbh, 1,
+					       "SELECT DATE_FORMAT(Date, '%d %b %Y') as Date, Meter FROM DayMeta WHERE MONTH(Date) = 3 ORDER BY Date DESC LIMIT 1",
+					       "Failed reading April info from DayMeta", 1))) {
+		    $april = $row->{Meter};
+		    $april = sprintf("%.0f", $april / $offset) if $april;
+		    $adate = $row->{Date};
+		}
+		else { 
+		    $april = 0; 
+		}
+
+		my $body = fill_in_file( $cfg->{email}{template}, 
+					 HASH => { 
+					     'reading' => sprintf("%.0f", $meter / $offset),
+					     'april' => $april,
+					     'adate' => $adate });
+
+		if (open(MAIL, "|" . $cfg->{email}{sendmail})) {
+
+		    print MAIL $body;
+
+		    close MAIL;
+		    $log->warn("Sending FIT meter reading email");
+		}
+		else {
+		    $log->error_warn("$pn - Canceling fit emails. Cannot open sendmail: $!");
+		    $fit_email = 0;
+		}
+	    }
+	    else {
+		$log->error("No meter reading available for email");
+	    }
+	}
+	$dbh -> disconnect;
+    }
+    else {
+	$log->error( "Cannot open data base for fit email");
+    }
+}
+
+sub ptime {                             # formats time hh:mm
+    my ($tm) = @_;
+    my ($sec, $min, $hour, @rest)  = gmtime($tm + $TZ{offset});
+    return sprintf( "%2d:%02d", $hour, $min);
+}
+
+sub tm2pt {
+    my $time = shift;
+    return int((($time + $TZ{offset}) % T24hrs)/ABSCISE);
+}
+
+#============ Server supporting subroutines =======
+
+sub parse_command {
+    my ($k, $s, $h, $message) = @_[KERNEL, SESSION, HEAP, ARG0];
+    my $tcp_out = $h->{client};
+
+ CASE:
+  {
+      $message =~ /^q(uit)?|exit/ && do { # this is only used by tcp server (I hope)
+	  $message = "B'bye!";
+	  $k->yield("shutdown");
+	  last CASE;
+      };
+
+      $message =~ /^(help|_start|\?)\s*/ && do {
+          $message = <<EOF;
+This is $pn server on $hostname at your service.
+
+Commands:
+
+     ? | help       - this message
+     ! | status     - show status info
+     last           - show last 12 results
+     lt | logtail   - display lines from log file
+     st | stoptail  - stop displaying log file
+
+     level <p>      - change log level <p> = inc | + | dec | -
+     level          - show log level
+     all | always | trace | debug | info | warn | error | fatal - set log level
+
+     fit <reading>  - enter fit meter reading
+     terminate <pc> - stop server and exit <pc> is pass code 
+
+     exit | quit    - exit program
+EOF
+      last CASE;
+      };
+
+      $message =~ /^(status|!)\s*$/ && do {
+	  $message = '';
+          $k->post('main', 'get_status', $tcp_out, latest_info());
+          last CASE;
+      };
+
+      $loglevels{$message} && do {
+          $log->level($loglevels{$message});
+          $message = "Log level set to $message";
+          last CASE;
+      };
+
+      ($message =~ /^level(\s+(inc|dec|\+|-))?\s*$/) && do {
+          my $dir = $2;
+          if ($dir) {
+              if ($dir =~ /inc|\+/) {
+                  $log->more_logging();
+                  my $level = $log->level();
+                  $message = "Log level increased to $loglevels{$level}";
+                  $log->warn($message);
+              }
+              elsif ($dir =~ /dec|-/) {
+                  $log->less_logging();
+                  my $level = $log->level();
+                  $message = "Log level decreased to $loglevels{$level}";
+                  $log->warn($message);
+              }
+          }
+          else {
+              my $level = $log->level();
+              $message = "Log level is " . $loglevels{$level};
+          }
+          last CASE;
+      };
+
+      $message =~ /^terminate\s+$passcode/ && do {
+          $tcp_out->put("_stop");
+
+          $k->signal($k, "INT");
+	  $message = '';
+          last CASE;
+      };
+      $message =~ /^send fit email\s+$passcode/ && do {
+	  send_fit_email(1);
+	  $message = 'done';
+	  last CASE;
+      };
+
+      $message eq 'last' && do {
+	  $message = last_12();
+	  last CASE;
+      };
+
+      ($message =~ /^lt|logtail\s*$/) && do {
+	  unless (exists($h->{LogTail}) && $h->{LogTail}) {
+	      $h->{LogTail} = POE::Session->create(
+		  inline_states => {
+		      _start => sub {
+			  $_[HEAP]->{wheel} = POE::Wheel::FollowTail->new(
+			      Filename   => $_[ARG0],
+			      InputEvent => 'got_line',
+			      ErrorEvent => 'got_error',
+			      SeekBack   => 1536,
+			      PollInterval => 1,
+			      );
+			  $_[HEAP]->{first} = 0;
+		      },
+		      got_line => sub {
+			  $tcp_out->put($_[ARG0])
+			      if $_[HEAP]->{first}++;
+		      },
+		      got_error => sub { warn "Logtail: $_[ARG0]\n" },
+		      quit => sub {
+			  delete $_[HEAP]->{wheel}; 
+		      },
+		  },
+		  args => [$logfile],
+		  );
+	      $message = "Tailing $logfile";
+	  }
+	  else { $message = 'Already tailing'; }
+	  last CASE;
+      };
+      ($message =~ /^st|stoptail\s*$/) && do {
+	  if (exists($h->{LogTail}) && $h->{LogTail}) {
+	      $k->post($h->{LogTail}->ID, 'quit');
+	      delete $h->{LogTail};
+	      $message = 'Clobbered the tail';
+	  }
+	  else {
+	      $message = 'Not tailing';
+	  }
+	  last CASE;
+      };
+
+      ($message  =~ /^fit\s+(\d+(\.\d+)?)\s*$/) && do {
+	  my $fit = $1;
+	  my $dbh = open_dbase();
+	  my $row;
+
+	  if ($row = do_mysql($dbh, 1,
+			      'SELECT Date, Meter from DayMeta where Meter IS NOT NULL order by Date desc limit 1',
+			      'Failed to read current meter reading')) {
+	      my $date = $row->{Date};
+	      my $inv  = $row->{Meter};
+
+
+	      if ($row = do_mysql($dbh, 0,
+				  "INSERT INTO Meters SET Date ='$date', FIT = '$fit', Inverter = '$inv'",
+				  "Could not insert meter reading", 0)) {
+
+
+		  if ($row = do_mysql($dbh, 0,
+				      "CREATE temporary table last5 select * from Meters order by Date desc limit 5",
+				      "Unable to create temorary table last5")) {
+		      if ($row = do_mysql($dbh, 1,
+					  "SELECT round(sum(Inverter)/sum(FIT), 4) as avg from last5",
+					  "Problem getting average from last 5 temp table")) {
+			  my $avg = $row->{avg};
+			  if ($avg && ($row = do_mysql($dbh, 0,
+						       "UPDATE Meters set Avg5 = '$avg' where Date = '$date'",
+						       "Failed updating Meters with avg"))) {
+			      $message = "Updated reading for $date  FIT: $fit kW.h   Inverter: $inv kW.h";
+			      $log->warn($message . "  Offset: $avg");
+			      $message .= "\nOffset ratio $avg\n";
+			  }
+		      }
+		  }
+	      }
+	      else {
+		  $message = "Failed to update meter reading";
+	      }
+	      $dbh -> disconnect;	    	
+	  }
+	  else {
+	      $message = "Failed to read inverter meter";
+	  }
+	  last CASE;
+      };
+
+      ($message =~ /^testy\s+(\w+)\s*$/) && do {
+	  $message = "Testing $1";
+	  $k->post('main', $1);
+	  last CASE;
+      };
+
+      ($message) && do {
+	  $message = "Unknown command ($message)";
+	  last CASE;
+      };
+
+      $message = "<<";
+  }                             # end of CASE
+
+    if ($message) {
+	chomp $message;
+	$message .= "\n";
+	$tcp_out->put($message) unless $message =~ /^<</;
+	$tcp_out->put("<<");
+    }
+}
+
+sub latest_info {
+    my ($dbh, $row);
+    my %val;
+    $val{offset} = 1;
+    if ($dbh =  open_dbase() ) {
+	if ($row = do_mysql($dbh, 1,
+			    "SELECT round(max(ETotalToday), 2) as energy, round(max(CurrentPower), 2) as peak, " .
+			    "round(max(Meter), 2) as meter FROM DayData WHERE Date=CURDATE()",
+			    "Failed reading info from DayData", 1)) {
+	    $val{energy} = $row->{energy};
+	    $val{peak}   = $row->{peak};
+	    $val{meter}  = $row->{meter};
+
+	    if ($val{energy} && ($row = do_mysql($dbh, 1,
+				"select Date,  max(CurrentPower) as peak from DayData group by Date order by peak desc limit 1",
+				"Failed to read peak from DayMeta", 1))) {
+		$val{peak_rcrd} = $row->{peak};
+		$val{date_peak} = $row->{Date};
+
+		if ($row = do_mysql($dbh, 1,
+				    "select Date, round(max(Energy), 3) as energy from DayMeta group by Date order by energy desc limit 1",
+				    "Failed to read energy from DayMeta", 1)) {
+		    $val{energy_rcrd} = $row->{energy};
+		    $val{date_energy} = $row->{Date};
+		    if ($row = do_mysql($dbh, 1,
+					"SELECT Avg5 as offset from Meters where Avg5 IS NOT NULL order by Date desc limit 1",
+					"Failed to read offset from Meters" )) {
+			$val{offset} = $row->{offset};
+		    }
+		}
+	    }
+	}
+	$dbh -> disconnect;
+    }
+    return \%val;
+}
+
+sub last_12 {
+   my $msg = "last 12 readings:\n\n";
+   my ($dbh, $res, $row);
+    if ($dbh =  open_dbase() ) {
+	$res = $dbh->prepare("SELECT * from DayData where Date=CURDATE() order by DataPoint desc limit 12");
+        if ($res->execute) {
+	    $msg .= "+----------+-------+--------+-----+\n";
+	    $msg .= "|   Time   | Power | Energy |  DP |\n";
+	    $msg .= "+----------+-------+--------+-----+\n";
+	    while ($row = $res -> fetchrow_hashref) {
+		$msg .= sprintf("| %s |  %4d | %6.3f | %3s |\n", $row->{Time}, $row->{CurrentPower},
+				$row->{ETotalToday}, $row->{DataPoint});
+	    }
+	    $msg .= "+----------+-------+--------+-----+\n";
+	}
+	else {
+	    $log->warn($dbh->errstr() . " Failed to read last 12 from DayData");
+	}
+	$dbh -> disconnect;
+    }
+   return $msg;
+}
+
+# Local Variables:
+# mode:perl
+# time-stamp-pattern: "30/Last-modified:[ \t]+%:y-%02m-%02d  %02H:%02M:%02S on %h"
+# End:
+#                           ===//===

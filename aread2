@@ -3,8 +3,6 @@
 # aread2 - Get readings from aurora inverter
 # Copyright (C) 2012 R.J.Middleton
 # e-mail: dick@lingbrae.com
-#
-# Time-stamp: "2012-03-19 18:17:55 dick"
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -26,6 +24,8 @@ sub help_info { print <<"End of Info;" ; }
 # File Name ......................... aread2
 # Written By ........................ Dick Middleton
 # Date .............................. 09-Mar-12
+#
+# Last-modified: 2012-11-17  10:12:13 on penguin.lingbrae"
 #
 # Description :
 #
@@ -79,4 +79,5 @@ if ($@) {
 
 # Local Variables:
 # mode:perl
+# time-stamp-pattern: "30/Last-modified:[ \t]+%:y-%02m-%02d  %02H:%02M:%02S on %h"
 # End:

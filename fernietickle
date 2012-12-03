@@ -1,0 +1,182 @@
+#!/usr/bin/perl
+
+# fernietickle - Control program for pvsolar
+# Copyright (C) 2012 R.J.Middleton
+# e-mail: dick@lingbrae.com
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+sub help_info { print <<"End of Info;" ; }
+############################################################################
+#
+# File Name ......................... fernietickle
+# Written By ........................ Dick Middleton
+# Date .............................. 06-Jan-12
+#
+# Last-modified: 2012-11-26  16:37:26 on penguin.lingbrae"
+#
+# Description : Based on program from POE cookbook
+#
+#  Sends messages to pvsolar and displays results
+#   commands determined by pvsolar
+#
+#     exit or quit to stop
+#
+#       -p   remote port
+#       -r   remote host
+#
+############################################################################
+End of Info;
+
+@_ = split('/', $0);		# extract program name
+our $pn = pop(@_);		# basename
+our $dr = join('/', @_);	# dirname
+
+use Getopt::Std;
+
+our %opt;
+our $option_set = "hp:r:";	# valid option characters
+&getopts($option_set, \%opt) || die "$pn aborted: Incorrect option\n";
+&help_info && exit(0) if $opt{h};
+
+# chop($today = `date +%d-%b-%y`); # today's date
+
+use warnings;
+use strict;
+
+# change this to host of pvsolar if not localhost (save using cmdline option!)
+use constant DEFAULT_HOST => 'localhost';
+use constant PROMPT       => "Command: ";
+
+#sub POE::Kernel::TRACE_REFCNT () { 1 }
+use POE qw(Wheel::ReadLine Filter::Stream Component::Client::TCP);
+use IO::Socket::INET;
+
+use constant DATAGRAM_MAXLEN => 2048;
+
+my $host   = $opt{r} || DEFAULT_HOST;    # The host to test.
+my $myhost = `hostname`;
+chomp $myhost;
+if ($host =~ /^$myhost/i) {
+    $host = 'localhost';
+}
+
+my $port   = $opt{p} || 11211;
+
+POE::Component::Client::TCP->new(
+#    Alias => 'remote_talk',
+    RemoteAddress => $host,
+    RemotePort    => $port,
+    Filter        => "POE::Filter::Line", 
+#		       InputLiteral => "\n",
+#		       OutputLiteral => "\n" ],
+    Started       => sub { $_[KERNEL]->alias_set("remote_talk"); },
+    Connected     => sub {
+	$_[KERNEL]->post("user_talk", "showmsg", "connected to $host:$port ...");
+	$_[HEAP]->{server}->put("_start\n");
+    },
+
+    ConnectError => sub {
+	$_[KERNEL]->post("user_talk", "showmsg", "could not connect to $host:$port ...");
+    },
+
+    ServerInput => sub {
+	my ($kernel, $heap, $input) = @_[KERNEL, HEAP, ARG0];
+	#when the server answer the question
+	$kernel->post("user_talk", "showmsg", $input);
+    },
+
+    InlineStates => {
+	sendmsg => sub {
+	    my ($kernel, $heap, $input) = @_[KERNEL, HEAP, ARG0];
+	    $heap->{server}->put("$input\n") if $heap->{server};
+	}
+    },
+    ServerError  => sub {},
+
+    Disconnected  => sub {
+	$_[KERNEL]->post("user_talk", "showmsg", "Server disconnected");
+	$_[KERNEL]->post("user_talk", "got_input", "quit");
+    }
+    );
+
+# talk to user
+POE::Session->create(	
+    inline_states => {
+	_start    => \&readline_run,
+	got_input => \&got_input_handler,
+	showmsg => \&msg_display,
+	_stop     => \&readline_stop,
+    }
+    );
+
+POE::Kernel->run();
+exit;
+
+sub readline_run {
+    my ($heap) = $_[HEAP];
+    $_[KERNEL]->alias_set("user_talk");
+    $heap->{readline_wheel} =
+	POE::Wheel::ReadLine->new(InputEvent => 'got_input',
+				  PutMode => 'idle');
+}
+
+sub msg_display {
+    my ($heap, $msg) = @_[HEAP, ARG0];
+    if ($msg =~ /^<</) {
+	$heap->{readline_wheel}->get(PROMPT);
+    }
+    else {
+	$heap->{readline_wheel}->put("$msg");
+    }
+}
+
+sub readline_stop {
+  delete $_[HEAP]->{readline_wheel};
+}
+
+sub got_input_handler {
+  my ($heap, $kernel, $input, $exception) = @_[HEAP, KERNEL, ARG0, ARG1];
+  if (defined $input) {
+      if ($input =~ /^exit|q(uit)?/) {
+	  $heap->{readline_wheel}->get("Goodbye!\r\n\n");
+	  $kernel->signal($kernel, "TERM");
+      }
+      elsif ($input =~ /^[^a-z?!]/) {
+	  $heap->{readline_wheel}->put("Invalid input.");
+	  $heap->{readline_wheel}->get(PROMPT);
+      }
+      elsif ($input) {
+	  $heap->{readline_wheel}->addhistory($input);
+	  $heap->{readline_wheel}->put("");
+	  $kernel->post("remote_talk", 'sendmsg', $input);
+      }
+      else {
+	  $heap->{readline_wheel}->get(PROMPT);
+      } 
+  }
+  else {
+      $heap->{readline_wheel}->put("Stopping");
+      delete $heap->{readline_wheel};
+      $kernel->signal($kernel, "TERM");
+      return;
+  }
+}
+
+# Local Variables:
+# mode:perl
+# time-stamp-pattern: "30/Last-modified:[ \t]+%:y-%02m-%02d  %02H:%02M:%02S on %h"
+# End:
+#                           ===//===
