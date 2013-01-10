@@ -45,12 +45,12 @@ Other - (WIP. not released yet)
 
 A result of this work can be seen at http://www.fouter.net/fernietickle.php
 
-Sboy
-----
+Sboy (for reading SMA Sunny Boy inverter)
+---- 
 
 See README in sboy directory
 
-Aread2
+Aread2 (for reading Power-One Aurora inverter)
 ------
 
 Takes current reading and exits.  Intended to be called by management
@@ -109,7 +109,7 @@ email addresses and text.  If email not required then comment out the
 whole [email] section.
 
 Set a passcode for use with fernietickle.  This is not really a
-security feature it is mearly to protect against issuing damaging
+security feature it is merely to protect against issuing damaging
 commands unintentionally.
 
 Pvsolar must be run as superuser (root).  It won't start otherwise.
@@ -160,7 +160,7 @@ DateTime-Astro-Sunrise
 
 This module has a problem relating to computing time offsets which
 causes it to break if the sunrise and sunset are not in the same day
-UTC.  Austrlia beware.
+UTC.  Australia beware.
 
 A patch file with a fix (that I think works) is in sunrise.patch.  It
 has to be applied to Sunrise.pm which is part of a perl module.  On a
