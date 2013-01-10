@@ -1,0 +1,28 @@
+pvsolar Jan 2013 Dick Middleton  GPL-3
+-------
+
+These files are used to access the pv data from mysql and transorm it
+into a json data object. You can test from your browser by surfing to:
+
+http://your.site.com/pvdata.php?pv=day&date=today
+http://your.site.com/pvdata.php?pv=sum
+
+If you use Firefox you can pretty-print the json data returned using
+an AddOn - I use JSONovich but there are others.
+
+Place these files on you web server where php can access them but
+preferably *not* in document root.  Either symlink pvdata.php to your
+document root of create a simple php script which includes pvdata.php
+
+e.g:
+
+<?php
+  
+include "../pvdata.php"; 
+
+?>
+
+Edit pv_config.php.inc to suit your site.  You need to give mysql
+access details and a couple of localisations.  If you are serving for
+more than one site you need separate versions of pv_config.inc but the
+other scripts may be shared.

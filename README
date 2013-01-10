@@ -26,10 +26,18 @@ fitmeter.tmpl - email template file for FIT meter reading submissions
 update.tmpl   - email template for daily reports to administrator.
 pvsolar.sql   - mysql table schema.
 
-Other - (WIP. not released yet)
+Other
 
 A collection of php and javascript programs for retrieving and
 displaying retrieved data.
+
+In the web subdir there is enough to get started.  These files have
+been editied to remove cruft before uploading.  They have not been
+tested in the de-cruft form; there my be typos.
+
+The generation of the html code is site specific.  The code example I
+have given should work if placed in the body of a simple page.  The
+head needs to include the javascript and stylesheets as required.
 
 Other - (WIP. not released yet)
 

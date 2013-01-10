@@ -1,0 +1,109 @@
+pvsolar Jan 2013 Dick Middleton  GPL-3
+-------
+
+Your web page needs:
+
+   fernietickle.js to fetch and process data from server.
+       fernietickle assumes there will will be 4 charts on the web
+       page.  I use jquery-ui tabs so they are in individual tabs. The
+       structure of the code I use is below.  ymmv but you'll have to
+       change fernitickle to match what you do.
+
+   highcharts.js from http://www.highcharts.com or
+      <link ... to http://code.highcharts.com/highcharts.js
+      This is what does the heavy lifting of displaying the data.
+
+   jquery and jquery-ui from jquery.com. jquery is required by highcharts.
+
+The following html example is for displaying the 4 charts in jquery-ui
+tabs. The file style.css has some styling which might help a little.
+
+
+   <div id='wrap'>
+
+    <h2>PV Solar</h2>
+
+    <div id='innawrap'>
+
+      <div id="tabs">
+	<ul>
+	  <li><a href="#tabs-0">Day</a></li>
+	  <li><a href="#tabs-1">Days</a></li>
+	  <li><a href="#tabs-2">Months</a></li>
+	  <li><a href="#tabs-3">Years</a></li>
+	</ul>
+	
+	<div id="tabs-0">
+	  <div class='tabtop'>
+	    <table style='width: 100%'>
+	      <tr>
+		<td>Select date: <input type="hidden" id="mydatepick"/>
+		  &nbsp;<img id='gotoToday' src='/image/Button-Last.png'
+		  alt='Today' tooltip='Go to today'/></td>
+		<td align='center' style='font-size: small'>Sunrise: <span id='sun-r'></span></td>
+		<td align='center' style='font-size: small'>Sunset: <span id='sun-s'></span></td>
+		<td style='text-align: right;'>Meter: <span id='meter-day'></span> kW.h</td>
+	      </tr>
+	    </table>
+	  </div>
+	  	  <div class='hcdiv' id='resizer'>
+	    <div id='daysimg' class='hcimg'></div>
+	  </div>
+	  	  <div id='reading-show'>
+	    <p>
+	      <table style='width:100%; font-size:small;'>
+		<tr>
+		  <th align='right'>Last Reading (<span id='reading-dpt'></span>):-</th>
+		  <td align='right'>Power sample: <span id='reading-pwr'></span> W</td>
+		  <td align='center'>Power rate: <span id='reading-smh'></span> W</td>
+		  <td align='left'>Energy: <span id='reading-nrg'></span> kW.h</td>
+		</tr>
+	      </table>
+	    </p>
+	  </div>
+	  <div id='dayend-show'>
+	    <p>
+	      <table style='width:100%; font-size:small;'>
+		<tr>
+		  <th align='right'>Generation:-</th>
+		  <td align='right'>Run time: <span id='dayend-rtm'></span></td>
+		  <td align='center'>Average power: <span id='dayend-ave'></span> W</td>
+		  <td align='left'>Total energy: <span id='dayend-nrg'></span> kW.h</td>
+		</tr>
+	      </table>
+	    </p>
+	  </div>
+	</div>
+
+	<div id="tabs-1">
+	  <div class='tabtop tabtoptext'>
+	    28 day daily average: <span id='avg28'></span> kW.h 
+	  </div>
+	  <div class='hcdiv'>
+	    <div id='mbdimg' class='hcimg'></div>
+	  </div>
+	</div>
+
+	<div id="tabs-2">
+	  <div class='tabtop tabtoptext'>
+	    12 month daily average: <span id='avg12'></span> kW.h
+	  </div>
+	  <div class='hcdiv'>
+	    <div id='monthimg' class='hcimg'></div>
+	  </div>
+	</div>
+
+
+	<div id="tabs-3">
+	  <div class='tabtop tabtoptext'>
+	    Total meter: <span id='meter-year'></span> kW.h
+	  </div>
+	  <div class='hcdiv'>
+	    <div id='yearimg' class='hcimg'></div>
+	  </div>
+	</div>
+
+      </div> <!-- tabs -->
+
+    </div>
+  </div>

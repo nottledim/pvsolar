@@ -1,0 +1,72 @@
+/*
+  css local changes for fernietickle
+  Copyright (C) 2012 R.J.Middleton
+  e-mail: dick@lingbrae.com
+  
+  This program is free software; you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation; either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program; if not, write to the Free Software
+  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+  
+  File Name ......................... fernietickle.m4
+  Written By ........................ Dick Middleton
+  Date .............................. 7-May-12
+
+  Last-modified: 2013-01-10  09:15:12 on penguin.lingbrae""
+
+  Description : Fernietickle specific styles
+
+*/
+
+.hcdiv {
+    width: 100%;
+}
+
+.hcimg {
+    height: 100%;
+}
+
+#innawrap { 
+    overflow: hidden;
+}
+
+#wrap { overflow: auto; }
+
+.tabtop {
+    height: 40px; 
+    padding-top: 10px;
+}
+
+.tabtoptext {
+    padding-left: 10px;
+}
+
+.ui-tabs .ui-tabs-hide {
+    position: absolute;
+    left: -10000px;
+}
+
+#gotoToday {
+    width: 16px;
+    height: 16px; 
+    border: none; 
+    display: none;
+    vertical-align: baseline;
+}
+
+/*
+ Local Variables:
+ mode: css
+ time-stamp-pattern: "30/Last-modified:[ \t]+%:y-%02m-%02d  %02H:%02M:%02S on %h"
+ End:
+*/
+
