@@ -20,7 +20,7 @@
 
 BEGIN {
 $main::version = <<'VER';
- Last-modified: 2012-11-26  11:49:54 on penguin.lingbrae""
+ Last-modified: 2015-01-31  17:01:59 on penguin.lingbrae""
 VER
 $version =~ s/["\s]+$//;
 }
@@ -53,7 +53,6 @@ use JSON;
 use DBI;
 use Proc::PID::File;
 use Proc::Daemon;
-use Log::Log4perl qw(get_logger  :levels);
 use POE qw( Wheel::Run Filter::Line Filter::Stream 
             Component::Server::TCP Wheel::FollowTail);
 use Date::Format;
@@ -61,6 +60,7 @@ use Time::Local;
 use Config::INI::Reader;
 use Text::Template qw(fill_in_file fill_in_string);
 use DateTime::Astro::Sunrise;
+use Log::Log4perl qw(get_logger  :levels);
 
 #------------------------------------------------------------
 
@@ -123,6 +123,9 @@ if (exists $cfg->{email}) {
     $fit_email = 1;
 }
 
+# prepare mysql access string
+
+our $dbconnection = getDbConn($cfg->{dbase}) || die "$pn - mysql data base name, user and password must be specified (DBBASE)\n";
 #
 # fork and background process
 #
@@ -156,6 +159,10 @@ POE::Session->create(
         eveupd => \&h_eveupd,
 	get_status => \&h_get_status,
 	fit_mail => \&h_fit_mail,
+	# debug only:
+	alarm_test => \&inverter_alarm,
+	list_heap => \&list_heap,
+	notify_test => \&notify_update,
     }
     );
 
@@ -208,6 +215,9 @@ sub h_reset {
     $h->{reading} = 0;
     $h->{failures} = 0;
     $h->{successes} = 0;
+#    $h->{had_pwr} = 0;
+#    $h->{last_pwr} = 0;
+    $h->{last_count} = 0;
 
     $h->{next_reading} = $tm->{first};
     $k->alarm(reset => $tm->{reset});
@@ -236,6 +246,23 @@ sub h_reset {
 	$h->{meter_reading} = 1;
 	$k->alarm(fit_mail => $tm->{nmr});
 	$log->info("Scheduling FIT email");
+    }
+    # compute inverter trip test time - 1hr after sunrise
+    $h->{trip_alarm} = exists $cfg->{alarm}{limits};
+    if ($h->{trip_alarm}) {
+	my ($r, $s, $o, $l) = split(/:/, $cfg->{alarm}{limits});
+	$h->{trip_limit} = $l || 3;
+	$h->{trip_tp_rise} = tm2pt($tm->{rise}) + $o;
+	if ($h->{trip_tp_rise} < $r) { # 6:30am
+	    $h->{trip_tp_rise} = $r;
+	}
+	$h->{trip_tp_set} = tm2pt($tm->{set}) - $o;
+	if ($h->{trip_tp_set} > $s) { # 5:30pm
+	    $h->{trip_tp_set} = $s;
+	}
+	$log->info(sprintf("Trip test period: %s to %s", 
+			    pt2time($h->{trip_tp_rise}),
+			    pt2time($h->{trip_tp_set}) ));
     }
 }
 
@@ -276,11 +303,122 @@ sub h_start_reading {
 	);
 }
 
+sub inverter_alarm {
+    my ($nowp) =  @_;
+    my $now = pt2time($nowp || 163);
+    my ($to_addr, $from_addr) = ($cfg->{email}{to_addr}, 
+				 $cfg->{email}{from_addr});
+    my $v = {'time' => $now,
+	     'hostname' => $hostname,
+	     'to_addr' => $to_addr,
+	     'from_addr' => $from_addr };
+
+    if (exists $cfg->{alarm}{email} && exists $cfg->{email}{sendmail} ) {
+	if (-r $cfg->{alarm}{email}) {
+
+	    my $body = fill_in_file( $cfg->{alarm}{email}, HASH => $v );
+	
+	    if (open(MAIL, "|" . $cfg->{email}{sendmail})) {
+	
+		print MAIL $body;
+
+		close MAIL;
+		$log->error("Sending inverter alarm email");
+	    }
+	}
+    }
+
+    if ( exists $cfg->{alarm}{sms} && exists $cfg->{alarm}{sms_txt} ) {
+	message_script($cfg->{alarm}{sms}, $cfg->{alarm}{sms_txt},
+		       $v, "Sending inverter alarm sms");
+    }
+
+    if ( exists $cfg->{notify}{prog} && exists $cfg->{alarm}{notify} ) {
+	message_script($cfg->{notify}{prog}, $cfg->{alarm}{notify},
+		       $v, "Sending trip alarm notify");
+    }
+}
+
+sub message_script {
+    my ($prog, $tmpl, $vars, $msg) = @_;
+
+    if (-x $prog && -r $tmpl ) {
+	my $body =  fill_in_file( $tmpl, HASH => $vars );
+	my @body =  split(/\n/, $body);
+	my @params = grep(/^@@/, @body);
+	@params = map({s/^@+//;$_} @params);
+	my $message = join(' ', grep(/^[^@]/, @body));
+
+	my $ret = qx($prog @params $message);
+	$log->warn("$msg\n$ret");
+    }
+}
+   
+sub check_inverter_trip {
+    my ($h, $pwr) = @_;
+
+    if ($h->{trip_alarm}) {
+	if ($pwr > 0) {
+#	$h->{last_pwr} = $pwr;
+#	$h->{had_pwr} ||= $pwr;
+	    $h->{last_count} = 0;
+	}
+	else {
+	    my $nowp = tm2pt(time());	# point for now
+	    if ($nowp >= $h->{trip_tp_rise} && $nowp <= $h->{trip_tp_set} ) {
+		#($h->{last_pwr} > 50)) {
+		$h->{last_count} ++;
+		if ( $h->{last_count} == $h->{trip_limit}) { # only send one message
+		    $log->error("Sequence of zero-power readings - check inverter trip");
+		    inverter_alarm($nowp);
+		    # $h->{last_pwr} = 0;
+	    }
+		}
+	    else {
+		$h->{last_count} = 0;
+	    }
+	    
+#        else {
+#	    if ( (tm2pt(time()) == $h->{trip_test_point}) && ! $h->{had_pwr}) {
+#		my $tt = ptime($h->{trip_test_point});
+#		$log->error("No power at $tt is suspicious - check inverter trip");
+#		inverter_alarm();
+#	    }
+#	}
+
+	}
+    }
+}
+
+sub check_restart {		# work in progress
+    my ($h, $new_en) = @_;
+
+    if ($h->{successes}) {
+
+	$new_en += $h->{acc_en};       # add saved accumulation
+	if ($new_en < $h->{last_en}) { # unexpected
+	    $h->{acc_en} = $h->{last_en};
+	    $new_en += $h->{acc_en}; # 
+	    $log->error("Energy day total too low - inverter restart assumed");
+	}
+	$h->{last_en} = $new_en;
+    }
+    else {
+	$h->{last_en} = 0;
+	$h->{acc_en} = 0;	# accumulated energy
+    }
+    return $new_en;
+}
+
 sub h_save_reading {
     my ($k, $h, $p1, $p2, $p3) = @_[KERNEL, HEAP, ARG0, ARG1, ARG2];
 
     $h->{successes}++;       # just count them
     $k->yield("readnext");   # schedule next
+
+    $h->{last_reading} = "$p1 $p2 $p3";
+
+    check_inverter_trip($h, $p1);
 
     my $dbh;
     if ($dbh = open_dbase() ) {
@@ -307,6 +445,7 @@ sub h_save_reading {
 	else {
 	    $log->info("Inserted new reading OK");
 	}
+	$dbh -> disconnect;
     }
     else {
 	$log->error("Failed to connect for adding reading($p1 $p2 $p3): $! (save_reading)" );
@@ -358,25 +497,36 @@ sub h_readnext {       # schedule next reading
     }
 }
 
-sub send_update_email {
-    return unless exists $cfg->{email}{update};
-
+sub notify_update {
     my ($v) = @_;
-    my $body = fill_in_file( $cfg->{email}{update}, HASH => $v );
+    if ( exists $cfg->{email}{update} && -e $cfg->{email}{update} ) {
 
-    if (open(MAIL, "|" . $cfg->{email}{sendmail})) {
-	
-	print MAIL $body;
+	$v->{to_addr} = $cfg->{email}{to_addr} || '';
+	$v->{from_addr} = $cfg->{email}{from_addr} || '';
 
-	close MAIL;
-	$log->warn("Sending daily update email");
+	my $body = fill_in_file( $cfg->{email}{update}, HASH => $v );
+
+	if (open(MAIL, "|" . $cfg->{email}{sendmail})) {
+	    
+	    print MAIL $body;
+
+	    close MAIL;
+	    $log->warn("Sending daily update email");
+	}
+    }
+
+    if ( exists $cfg->{notify}{prog} && exists $cfg->{notify}{template} ) {
+	message_script($cfg->{notify}{prog}, $cfg->{notify}{template},
+		       $v, "Notifying daily update");
     }
 }
-    
+
 sub h_eveupd {
     my ($k, $h, $p) = @_[KERNEL, HEAP, ARG0];
     my ($dbh, $row);
     my (%v);
+    $v{offset} = $h->{tm}->{offset} || 1; # zero not permitted
+    $v{hostname} = $hostname;
 
     $log->info("Evening update");
     if ($dbh =  open_dbase() ) {
@@ -416,7 +566,7 @@ sub h_eveupd {
 						    " WHERE Date = CURDATE()",
 						    "Failed to add averages to DayMeta")) {
 				    $log->warn('Updated day averages OK');
-				    &send_update_email(\%v);
+				    &notify_update(\%v);
 				}
 				else {
 				    $log->error("Failed to update day averages in DayMeta");
@@ -646,6 +796,19 @@ sub tzGuess {
     return sprintf("%i:00:00", int($latlong[1]/15 + 0.5));
 }
 
+sub getDbConn {			# assemble DBI connection string
+    my ($db) = @_;
+    my $dbx = '';
+
+    if ($db->{DBBASE} && $db->{DBUSER} && $db->{DBPASS}) {
+
+	$dbx = 'DBI:mysql:database=' . $db->{DBBASE};
+	$dbx .= ';host=' . $db->{DBHOST} if $db->{DBHOST};
+	$dbx .= ';port=' . $db->{DBPORT} if $db->{DBPORT};
+    }
+    return $dbx;
+}
+
 sub setTzOffset {
     my ($offset) = @_;
     $TZ{offset} = $offset;	# seconds
@@ -819,7 +982,7 @@ sub log_report {
 
 sub open_dbase {
     my $dbh;
-    if ($dbh = DBI->connect($cfg->{dbase}{DBBASE}, $cfg->{dbase}{DBUSER}, $cfg->{dbase}{DBPASS}) ) {
+    if ($dbh = DBI->connect($dbconnection, $cfg->{dbase}{DBUSER}, $cfg->{dbase}{DBPASS}) ) {
 	$dbh->{PrintError} = 0;
 	$dbh->{RaiseError} = 0;
     }
@@ -930,11 +1093,16 @@ sub send_fit_email {
 		    $april = 0; 
 		}
 
+		my ($to_addr, $from_addr) = ($cfg->{email}{to_addr}, 
+					     $cfg->{email}{from_addr});
 		my $body = fill_in_file( $cfg->{email}{template}, 
 					 HASH => { 
 					     'reading' => sprintf("%.0f", $meter / $offset),
 					     'april' => $april,
-					     'adate' => $adate });
+					     'adate' => $adate,
+					     'to_addr' => $to_addr,
+					     'from_addr' => $from_addr
+					 });
 
 		if (open(MAIL, "|" . $cfg->{email}{sendmail})) {
 
@@ -970,6 +1138,14 @@ sub tm2pt {
     return int((($time + $TZ{offset}) % T24hrs)/ABSCISE);
 }
 
+sub pt2time {
+    my ($pt) = @_;
+    my $m = $pt * ABSCISE / 60;
+    my $h = int($m/60);
+    $m = $m % 60;
+    return sprintf("%d:%02d", $h, $m);
+}
+
 #============ Server supporting subroutines =======
 
 sub parse_command {
@@ -986,6 +1162,8 @@ sub parse_command {
 
       $message =~ /^(help|_start|\?)\s*/ && do {
           $message = <<EOF;
+Using data base '$dbconnection'
+
 This is $pn server on $hostname at your service.
 
 Commands:
@@ -1169,6 +1347,26 @@ EOF
 	$tcp_out->put("<<");
     }
 }
+
+sub list_heap {
+    my ($h) = $_[HEAP];
+    my $message = "\n";
+    foreach my $key (sort keys %{$h} ) {
+	my $v = (defined $h->{$key}) ? $h->{$key} : 'undef';
+	if ($v =~ /^HASH/) {
+	    my $h2 = $v;
+	    foreach my $k2 (sort keys %$h2) {
+		$message .= $key . "->$k2: $h2->{$k2}\n";
+	    }
+	}
+	else {
+	    $message .= "$key: $v\n";
+	}
+    }
+    $log->info($message);
+}
+    
+    
 
 sub latest_info {
     my ($dbh, $row);

@@ -84,7 +84,7 @@ packages. You'll need to make sure the following are available:
  Getopt::Std, JSON, DBI, Proc::PID::File,
  Proc::Daemon, Log::Log4perl, POE, Date::Format,
  Time::Local, Config::INI::Reader, Text::Template,
- DateTime::Astro::Sunrise
+ DateTime::Astro::Sunrise, Term::Readkey
 
 If they're not part of your distro (they are all in Debian) they can
 be obtained from CPAN.
@@ -117,6 +117,9 @@ Tail /var/log/pvsolar.log to check for errors.
 
 Using logrotate to manage the logfile is recommended especially if a
 log level setting more verbose than 'WARN' is used.
+
+2013-07-05 Added check for unlikely sequence of zero readings and send alarm email
+           alarm email template added to config
 
 GOTCHAS
 -------

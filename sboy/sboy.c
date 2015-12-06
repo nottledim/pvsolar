@@ -4,7 +4,7 @@
   e-mail: dick@lingbrae.com
 */
 
-const char *ver = "Sboy 2012-11-15 1603"; /* auto updated by emacs */
+const char *ver = "Sboy 2015-12-06 1331"; /* auto updated by emacs */
 
 /*
   This program is free software; you can redistribute it and/or modify
@@ -33,6 +33,8 @@ const char *ver = "Sboy 2012-11-15 1603"; /* auto updated by emacs */
 
   N.B  Bluetooth default MAC addresses in config.h.
        Use hcitool to lookup your MAC addresses.
+
+  6-Dec-15 RJM added tzOffset option
 */
 
 /* gengetopts workaround */
@@ -90,13 +92,17 @@ const char *ver = "Sboy 2012-11-15 1603"; /* auto updated by emacs */
 #define EINF MYNAME, __LINE__	/* error info for error message */
 #define EP "%s(%i): "		/* error message prefix */
 
+#define PWR_MAX 5000		/* Power limit value for validation */
+#define NRG_MAX 50		/* Day Energy limit value for validation */
+#define MTR_MAX 150000		/* Meter limit value for validation */
+
 typedef unsigned char byte;	/* a byte */
 typedef unsigned short uShort;	/* unsigned short int (2 bytes) */
 typedef unsigned int uInt;	/* unsigned int (4 bytes) */
 typedef unsigned long uLong;	/* unsigned long (4 bytes on i386) */
 typedef enum { false = 0, true = 1 } bool;
 
-typedef void (*rqDecode)();	/* function type definition */
+typedef bool (*rqDecode)();	/* function type definition */
 
 struct addr_set {		/* structure for mac address */
   char *ident;
@@ -184,8 +190,10 @@ static int skt = -1;		/* socket number */
 static byte seqNo = -1;		/* L2 pdu sequence number */
 static enum { quiet = 0, normal = 1, verbose,  /* verbosity levels */
 	      detailed, debug } verbosity = normal; /* debug not used */
+static enum { l_meter = 0, l_events = 1 } listtype = l_meter;
 bool btStrength = false;	/* flag set to show signal strength */
 bool setTime = false;		/* flag to set inverter time */
+int tzOffset = 0;               /* timezone offset seconds from GMT (E is -ve) */
 bool history = false;		/* flag set to show history */
 bool dcValues = false;		/* flag set to show DC readings */
 time_t h_begin, h_finish;
@@ -529,6 +537,9 @@ bool handleL2Payload(byte *pbuf, int plen, bool *more) {
 		EINF, seqRx, seqNo);
   if (V_DETAILED) errmsg("L2 Error: %X  L2 fragment: %X\n",
 			  l2err, frag);
+  if (l2err != 0)
+    errmsg(EP"Error returned by L2 (%d)- Command error?\n", l2err);
+
   *more = (frag > 0);
   if (l2err == 0x14)
     OK = errmsg(EP"Bad request reported by L2\n", EINF);
@@ -655,8 +666,8 @@ uShort finaliseL2pdu(uShort inum) {	/* returns L2 pdu length */
 
   if (DevSerial.ready)		/* it's not really optional */
     putE(pp1, &DevSerial.bin)
-    else
-      putE(pp1, &NullMacAddr.bin); /* default serial number */
+  else
+    putE(pp1, &NullMacAddr.bin); /* default serial number */
 
   repeatB(&pp1, 0, 6); 		/* 6 zeros */
 
@@ -699,7 +710,8 @@ bool sendPdu(uShort l1cmd, uShort payload_len, rqDecode decode) {
     bool more = true;
     while (OK && more) {
       OK = read_response(&more);
-      if (OK) decode();
+      if (OK) 
+	OK = decode();
     }
   }
   return OK;
@@ -707,14 +719,15 @@ bool sendPdu(uShort l1cmd, uShort payload_len, rqDecode decode) {
 
 /* ================================================== */
 
-void dxNoData() { }		/* this is a null data decoder  */
+bool dxNoData() { return true; }   /* this is a null data decoder  */
 
-void dxInit2() {
+bool dxInit2() {
   /* get serial number from inverter response */
   byte *pv = l1_payload + L2HEADRLEN + 27;
   getE(pv, &SmaSerial.bin);
   SmaSerial.ready = true;
   //    debugBufr("SmaSerial", SmaSerial.bin, MACLEN);
+  return true;
 }
 
 // Inverter initialization and logon process
@@ -868,7 +881,6 @@ bool setInverterTime() {
   bool OK = false;
 
   uInt now = time(NULL);	/* must be 4 bytes */
-  int tzOffset = 0;		/* GMT (seconds) Must be signed somehow */
   assert(sizeof(now) == 4);
 
   initializePdu("Set inverter time ");
@@ -904,9 +916,10 @@ bool verifyTime(int dt) {
   return OK;
 }
 // -------------------- Signal Strength
-void dxSignalStrength() {
+bool dxSignalStrength() {
   float strength = (100.0 / 256.0) * l1_payload[BP_SIGS];
   if (V_NORMAL) printf("Bluetooth Sig Strength: %.1f%%\n", strength);
+  return true;
 }
 
 bool rqSignalStrength() {
@@ -916,7 +929,7 @@ bool rqSignalStrength() {
   return sendPdu(L1_SIG, finaliseL1pdu(), dxSignalStrength);
 }
 // -------------------- DC Readings
-void dxDCreadings() {
+bool dxDCreadings() {
   struct readings volts = { 0 };
   struct readings current = { 28, 0 };
 
@@ -925,15 +938,16 @@ void dxDCreadings() {
 
   printf("DC volts: %.1fV  current: %.3fA   power: %.3fW\n",
 	 volts.value * 10, current.value, volts.value * current.value * 10);
+  return true;
 }
 
 bool rqDCreadings() {
-  static byte inverter_dc_voltamp[] = { 0x83, 0x00, 0x02, 0x80, 0x53, 0x00,
-					0x00, 0x45, 0x00, 0xFF, 0xFF, 0x45,
+  static byte inverter_dc_voltamp[] = { 0x83, 0x00, 0x02, 0x80, 
+					0x53, 0x00,
+					0x00, 0x45, 
+					0x00, 0xFF, 
+					0xFF, 0x45,
 					0x00 };
-  /*  static byte inverter_dc_power[] = { 0x83, 0x00, 0x02, 0x80, 0x53, 0x00,
-				      0x00, 0x25, 0x00, 0xFF, 0xFF, 0x25,
-				      0x00 };*/
   bool OK =false;
 
   initializePdu("Rq inverter DC power");
@@ -942,16 +956,18 @@ bool rqDCreadings() {
   OK = sendPdu(L1_CMD, finaliseL2pdu(L2STD), dxDCreadings);
   return OK;
 }
+
 // -------------------- History
-void dxHistory() {
+bool dxHistory() {
   time_t dt;			/* time as time_t */
   int dti = 0, value = 0;	/* returned time & value */
+  int eval = 0;
   float meter;			/* value converted to float */
   byte *pp = l1_payload + RES_START; /* pointer into payload */
   while ( pp < pp1 - PLEND) {
     getE(pp, &dti);
     getE(pp, &value);
-    pp += sizeof(int);       /* skip unknown value */
+    pp += sizeof(int);		/* skip unknown value */
 
     dt = (time_t) dti;	/* time_t is 8 bytes on some systems */
     meter = (float) value / 1000.0;
@@ -959,6 +975,7 @@ void dxHistory() {
     fmttime(dt, tbuf, sizeof(tbuf));
     printf("%s  %.3f\n", tbuf, meter);
   }
+  return true;
 }
 
 bool rqHistory() {
@@ -991,20 +1008,106 @@ bool rqHistory() {
   }
   return OK;
 }
+#ifdef EVENTS
+//--- Events history
+bool dxEvents() {
+  time_t dt;			/* time as time_t */
+
+  int dti = 0;			/* returned time */
+  uShort eid;			/* EntryID   2 */
+  uShort sid;			/* SUSyID    2 */
+  uInt  sno;			/* SerNo     4 */
+  uShort eco;			/* EventCode 2 */
+  uShort flg;			/* Flags     2 */
+  /* 16 bytes to here */
+  uInt Group;			/* 4 */
+  uInt uInt1;			/* 4 */
+  uInt uInt2;			/* 4 */
+  uInt Counter;			/* 4 */
+  uInt uInt3;			/* 4 */
+  uInt uInt4;			/* 4 */
+  uInt uInt5;			/* 4 */
+  uInt uInt6;			/* 4 */
+  /*this lot 32 bytes */
+
+  byte *pp = l1_payload + RES_START; /* pointer into payload */
+  while ( pp < pp1 - PLEND) {
+    //    debugBufr("ev",  pp, 48);
+    getE(pp, &dti);
+    getE(pp, &eid);
+    getE(pp, &sid);
+    getE(pp, &sno);
+    /*    getE(pp, &eco);
+    getE(pp, &flg);
+
+    getE(pp, &Group);
+    getE(pp, &uInt1);
+    getE(pp, &uInt2);
+    getE(pp, &Counter);
+    getE(pp, &uInt3);
+    getE(pp, &uInt4);
+    getE(pp, &uInt5);
+    getE(pp, &uInt6);*/
+    
+
+    dt = (time_t) dti;	/* time_t is 8 bytes on some systems */
+
+    char tbuf[50];	/* buffer for formatted time/date */
+    fmttime(dt, tbuf, sizeof(tbuf));
+    printf("%s  %04x  %04x  %08x\n", tbuf, eid, sid, sno);
+    /*  %04x  %04x | ", tbuf, eid, sid, sno, eco, flg);
+    printf("%08x %08x %08x %08x | ", Group, uInt1, uInt2, Counter);
+    printf(" %08x %08x %08x %08x\n", uInt4,  uInt4,  uInt5,  uInt6);*/
+  }
+  return true;
+}
+
+bool rqEvents() {
+  uInt next, until;		// need to be 32 bits 
+  bool OK;			// result code 
+  static byte events_args[] = {  0x70, 0x20, 0x02, 0x00 };//, 0x70 };
+
+  char tbuf[50];		// buffer for time/date format
+  fmttime(h_begin, tbuf, sizeof(tbuf));
+  printf("Events - list from: %s ", tbuf);
+  fmttime(h_finish, tbuf, sizeof(tbuf));
+  printf("to: %s \n", tbuf);
+
+  next = h_begin;
+  OK = (next < h_finish);
+  while (OK && (next < h_finish))  {
+    until = next + (24 * 3600);
+    if (until > h_finish) until = h_finish;
+
+    initializePdu("Rq events");
+    putE_r(pp2, &rq_preamble);
+
+    //putE_r(pp2, &eva);
+
+    assert(sizeof(next) == 4);	// time must be 4 bytes
+    putE_r(pp2, &next);
+    putE_r(pp2, &until);
+
+    OK = sendPdu(L1_CMD, finaliseL2pdu(L2STD), dxEvents);
+    next = until;		// start another request (maybe)
+  }
+  return OK;
+}
+#endif
 // -------------------- Current Power
-void dxCurrentPower() {
+bool dxCurrentPower() {
   decode_readings(&power);
   assert(power.value_type == 0x263F);          /* should be 263F */
   print_readings("CPowr", &power);
   if (V_NORMAL) printf("Current power = %i Watt\n", power.value_raw);
+  return (power.value_raw >= 0 && power.value_raw < PWR_MAX) ||
+    errmsg(EP"Power value unlikely %i\n", EINF, power.value_raw);
 }
 
 bool rqCurrentPower() {
-  static byte current_power_args[] = { 0x51, 0x00,
-				       0x3f, 0x26,
-				       0x00, 0xFF,
-				       0x3f, 0x26,
-				       0x00, 0x0e };
+  static byte current_power_args[] = { 0x51,
+				       0x00, 0x3f, 0x26, 0x00,
+				       0xFF, 0x3f, 0x26, 0x00, 0x0e };
   initializePdu("Rq current power");
   putE_r(pp2, &rq_preamble);
   putE_r(pp2, &current_power_args);
@@ -1014,19 +1117,19 @@ bool rqCurrentPower() {
   return OK;
 }
 // -------------------- Energy Today
-void dxEnergyToday() {
+bool dxEnergyToday() {
   decode_readings(&energy);
   assert(energy.value_type == 0x2622); /* should be 2622 */
   print_readings("Enrgy", &energy);
   if (V_NORMAL) printf("E total today = %.3f kW.h\n", energy.value);
+  return (energy.value >= 0 && energy.value < NRG_MAX) || 
+      errmsg(EP"Energy value unlikely: %.3f\n", EINF, energy.value);
 }
 
 bool rqEnergyToday(struct readings *energy) {
-  static byte energy_today_args[] = { 0x54, 0x00,
-				      0x22, 0x26,
-				      0x00, 0xFF,
-				      0x22, 0x26,
-				      0x00 };
+  static byte energy_today_args[] = { 0x54,
+				      0x00, 0x22, 0x26, 0x00,
+				      0xFF, 0x22, 0x26, 0x00 };
   initializePdu("Rq energy today");
   putE_r(pp2, &rq_preamble);
   putE_r(pp2, &energy_today_args);
@@ -1035,7 +1138,7 @@ bool rqEnergyToday(struct readings *energy) {
   return OK;
 }
 // -------------------- Meter
-void dxInverterMeter() {
+bool dxInverterMeter() {
   char tbuf[50];
   decode_readings(&meter);
   assert(meter.value_type == 0x2601); /* should be 2601 */
@@ -1045,14 +1148,14 @@ void dxInverterMeter() {
     fmttime(meter.datetime, tbuf, sizeof(tbuf));
     printf("Time of reading: %s\n", tbuf);
   }
+  return (meter.value >= 0 && meter.value < MTR_MAX) || 
+      errmsg(EP"Meter value unlikely: %.1f\n", EINF, meter.value);
 }
 
 bool rqInverterMeter(struct readings *meter) {
-  static byte inverter_meter_args[] = { 0x54, 0x00,
-					0x01, 0x26,
-					0x00, 0xff,
-					0x01, 0x26,
-					0x00 };
+  static byte inverter_meter_args[] = { 0x54, 
+					0x00, 0x01, 0x26, 0x00,
+					0xff, 0x01, 0x26, 0x00 };
   initializePdu("Rq inverter meter");
   putE_r(pp2, &rq_preamble);
   putE_r(pp2, &inverter_meter_args);
@@ -1080,9 +1183,16 @@ bool takeReadings() {
       OK = OK && rqDCreadings();
   }
 
-  if (V_NORMAL && history)
-    OK = OK && rqHistory();
-
+  if (V_NORMAL && history) {
+    switch (listtype) {
+    case l_meter:
+      OK = OK && rqHistory();
+      break;
+    case l_events:
+      //      OK = OK && rqEvents();
+      break;
+    }
+  }
   else {			/* not if doing history */
 
     OK = OK && rqCurrentPower();
@@ -1176,6 +1286,7 @@ bool process_options(int argc, char** argv, bool *help) {
       if (OK && args_info.history_given) {
 	OK = false;
 	char *msg = "date";
+	history = true;
 
 	if ( (h_begin = str2time(args_info.history_arg, NULL, fmt_date)) ) {
 	  h_finish = str2time(NULL, &h_begin, fmt_date);
@@ -1194,8 +1305,9 @@ bool process_options(int argc, char** argv, bool *help) {
 	  if (h_finish && h_begin){
 	    msg = "end time: begin after end";
 	    if (h_finish > h_begin) {
-	      history = true;
 	      OK = true;
+
+	      //	      listtype = args_info.list_type_given ? args_info.list_type_arg : l_meter;
 	    }
 	  }
 	}
@@ -1203,12 +1315,16 @@ bool process_options(int argc, char** argv, bool *help) {
 	  errmsg(EP"Incorrect format given for history %s\n", EINF, msg);
 	}
       }
-
+      /* Time options */
+      setTime = args_info.set_time_given;
+      if (setTime)
+	tzOffset = args_info.set_time_arg;
+      
       /* simple options */
       btStrength = args_info.bt_power_given;
       dcValues = args_info.dc_readings_given;
-      setTime = args_info.set_time_given;
 
+      printf("tz: %d\n", tzOffset);
       /* unless -q, if o/p option given then set -v to normal */
       if (!args_info.quiet_given && V_QUIET && (btStrength || dcValues || history))
 	verbosity = normal;	
