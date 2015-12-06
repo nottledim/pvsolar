@@ -4,7 +4,7 @@
   e-mail: dick@lingbrae.com
 */
 
-const char *ver = "Sboy 2015-12-06 1331"; /* auto updated by emacs */
+const char *ver = "Sboy 2015-12-06 1348"; /* auto updated by emacs */
 
 /*
   This program is free software; you can redistribute it and/or modify
@@ -1324,7 +1324,6 @@ bool process_options(int argc, char** argv, bool *help) {
       btStrength = args_info.bt_power_given;
       dcValues = args_info.dc_readings_given;
 
-      printf("tz: %d\n", tzOffset);
       /* unless -q, if o/p option given then set -v to normal */
       if (!args_info.quiet_given && V_QUIET && (btStrength || dcValues || history))
 	verbosity = normal;	
