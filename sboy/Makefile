@@ -43,7 +43,7 @@ BIN = sboy sboy-test
 all:    sboy
 
 $(BIN):	$(COBS)
-	$(CC) $(LDLIBS) $(COBS)  -o $@
+	$(CC) $(COBS) $(LDLIBS)  -o $@
 
 
 $(COBS):	cmdline.h config.h
